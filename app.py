@@ -42,6 +42,13 @@ def phone(value):
         raise ValueError('Telefone inválido. Use DDI + DDD + número, como 5511999999999.')
     return result
 
+def pretty_phone(value):
+    digits = re.sub(r'\D', '', str(value))
+    if digits.startswith('55') and len(digits) in (12, 13):
+        local = digits[4:]
+        return f'+55 ({digits[2:4]}) {local[:-4]}-{local[-4:]}'
+    return '+' + digits if digits else ''
+
 def date_text(value):
     if not value:
         return ''
@@ -308,7 +315,13 @@ def create_apps(db_path=None, settings=None):
             evs = by_contact.get(row['id'], [])
             replies = [e for e in evs if e['kind']=='reply']
             statuses = {e['body'] for e in evs if e['kind']=='status'}
-            row['delivery'] = next((label for code,label in [('read','Lida'),('delivered','Entregue'),('failed','Falhou'),('sent','Enviada')] if code in statuses), 'Não informado')
+            row['status'], row['delivery'] = next(((code,label) for code,label in [('read','Lida'),('delivered','Entregue'),('failed','Falhou'),('sent','Enviada')] if code in statuses), ('none','Não informado'))
+            status_ts = [e['ts'] for e in evs if e['kind']=='status' and e['body']==row['status']]
+            row['status_when'] = date_text(status_ts[-1]) if status_ts else ''
+            row['replied'] = bool(replies)
+            row['last_ts'] = max((e['ts'] for e in evs), default=0)
+            row['phone_fmt'] = pretty_phone(row['phone'])
+            row['name_fmt'] = '' if row['name']==row['phone'] else row['name']
             row['result'] = replies[-1]['result'] if replies else 'pendente'
             row['answer'] = replies[-1]['body'] if replies else ''
             row['choice'] = replies[-1]['choice'] if replies else ''
@@ -316,16 +329,21 @@ def create_apps(db_path=None, settings=None):
             row['association'] = replies[-1]['association'] if replies else ''
             rows.append(row)
         totals = {k: sum(r['result']==k for r in rows) for k in LABELS}
-        totals.update(total=len(rows), delivered=sum(r['delivery'] in ('Entregue','Lida') for r in rows), read=sum(r['delivery']=='Lida' for r in rows))
+        totals.update(total=len(rows), delivered=sum(r['delivery'] in ('Entregue','Lida') for r in rows), read=sum(r['delivery']=='Lida' for r in rows),
+            sent=sum(r['status']!='none' for r in rows), failed=sum(r['status']=='failed' for r in rows), replied=sum(r['replied'] for r in rows))
         return rows, totals
 
     @panel.get('/')
     def index():
-        campaign = request.args.get('campanha','')
+        tab = 'config' if request.args.get('aba') == 'config' else 'painel'
+        with connect() as db:
+            active = db.execute('SELECT * FROM campaign_windows WHERE ended IS NULL').fetchone()
+        # Opens on the running campaign; "Todas" is an explicit empty choice.
+        campaign = request.args.get('campanha', active['campaign'] if active else '')
         rows, totals = report(campaign)
+        rows.sort(key=lambda r: r['last_ts'], reverse=True)  # Atividade mais recente primeiro.
         with connect() as db:
             campaigns = [r['campaign'] for r in db.execute('SELECT campaign FROM contacts UNION SELECT campaign FROM campaign_windows ORDER BY campaign')]
-            active = db.execute('SELECT * FROM campaign_windows WHERE ended IS NULL').fetchone()
             unlinked = db.execute("SELECT COUNT(DISTINCT context) AS total FROM events WHERE kind='status' AND contact_id IS NULL").fetchone()['total']
             inbox = db.execute("SELECT * FROM events WHERE kind='reply' AND (contact_id IS NULL OR result='revisar') ORDER BY ts DESC LIMIT 200").fetchall()
             last = db.execute('SELECT MAX(ts) AS last_ts FROM events').fetchone()['last_ts']
@@ -333,7 +351,7 @@ def create_apps(db_path=None, settings=None):
             campaign=campaign, inbox=inbox, labels=LABELS, date_text=date_text,
             configured=bool(settings.get('webhook_secret') and settings.get('phone_number_id')),
             last=date_text(last), all_contacts=report()[0], rules=get_rules(), active=active,
-            unlinked=unlinked, hosted=bool(os.environ.get('PANEL_PASSWORD')))
+            unlinked=unlinked, hosted=bool(os.environ.get('PANEL_PASSWORD')), tab=tab, pretty_phone=pretty_phone)
 
     @panel.post('/campanha')
     def campaign_control():
@@ -361,13 +379,13 @@ def create_apps(db_path=None, settings=None):
         rules = {k:[v.strip() for v in request.form.get(k,'').splitlines() if v.strip()] for k in ('aceite','recusa')}
         if {normalized(v) for v in rules['aceite']} & {normalized(v) for v in rules['recusa']}:
             flash('Uma opção não pode representar aceite e recusa ao mesmo tempo.')
-            return redirect(url_for('index'))
+            return redirect(url_for('index', aba='config'))
         with connect() as db:
             for k,v in rules.items():
                 db.execute('''INSERT INTO preferences(key,value) VALUES(?,?)
                   ON CONFLICT(key) DO UPDATE SET value=excluded.value''',(k,json.dumps(v)))
         flash('Regras salvas para as próximas respostas. Respostas anteriores permanecem disponíveis para revisão.')
-        return redirect(url_for('index'))
+        return redirect(url_for('index', aba='config'))
 
     @panel.post('/importar')
     def import_csv():
@@ -405,7 +423,7 @@ def create_apps(db_path=None, settings=None):
         except (ValueError, UnicodeError, csv.Error, sqlite3.IntegrityError,
                 psycopg.IntegrityError if psycopg else sqlite3.IntegrityError) as exc:
             flash('Importação cancelada: '+str(exc))
-        return redirect(url_for('index'))
+        return redirect(url_for('index', aba='config'))
 
     @panel.post('/revisar')
     def review():
@@ -421,7 +439,7 @@ def create_apps(db_path=None, settings=None):
             db.execute('UPDATE events SET contact_id=?,result=?,association=? WHERE id=?', (contact['id'], result, 'Revisão manual local', event_id))
             db.execute('INSERT INTO audit(ts,event_id,action) VALUES(?,?,?)',(int(time.time()),event_id,json.dumps({'before_contact':ev['contact_id'],'before_result':ev['result'],'contact':contact['id'],'result':result})))
         flash('Revisão salva. A resposta original foi preservada.')
-        return redirect(url_for('index'))
+        return redirect(url_for('index', aba='config'))
 
     @panel.get('/modelo.csv')
     def model():

@@ -1,21 +1,226 @@
-<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Respostas • Canal oficial</title>
-<style>
-:root{font-family:Segoe UI,Arial,sans-serif;color:#193345;background:#f2f5f7}*{box-sizing:border-box}body{margin:0}header{background:#123748;color:white;padding:28px 5%}h1{margin:8px 0;font-size:30px}header p{color:#c5dce5}main{max-width:1350px;margin:auto;padding:24px}a{color:#08758b}button,.button{background:#08758b;color:white;border:0;border-radius:7px;padding:11px 16px;text-decoration:none;display:inline-block;cursor:pointer;font-size:14px}input,select{padding:10px;border:1px solid #b8cbd4;border-radius:6px;max-width:100%;background:white}.toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:22px 0}.card,section{background:white;border:1px solid #dbe5ea;border-radius:12px;padding:20px}.card strong{display:block;font-size:30px;margin-top:8px}.muted{color:#627583;font-size:13px}.notice{padding:14px;background:#fff1d6;border-radius:8px;margin:14px 0}.success{background:#dff5e9}section{margin:20px 0}h2{font-size:20px;margin-top:0}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;border-bottom:1px solid #e3ebef;padding:12px;vertical-align:top}th{color:#526d7b;font-size:12px;text-transform:uppercase}.badge{padding:5px 8px;border-radius:5px;background:#edf1f4;display:inline-block;white-space:nowrap}.aceitou{background:#def6e9;color:#156541}.recusou{background:#fee5e5;color:#9b3535}.revisar{background:#fff0cf;color:#805700}.reply{border-top:1px solid #ddd;padding:16px 0}.reply p{white-space:pre-wrap;overflow-wrap:anywhere}.answer{max-width:280px;overflow-wrap:anywhere}footer{padding:15px;color:#627583;font-size:12px}details{margin-top:12px}label{font-size:14px}
-</style></head><body><header><div class="muted" style="color:#a9d8df">ACOMPANHAMENTO DE CAMPANHAS · LOCAL</div><h1>Respostas do canal oficial</h1><p>Quem recebeu, quem respondeu e quem autorizou novas mensagens.</p></header><main>
-{% for message in get_flashed_messages() %}<div class="notice">{{message}}</div>{% endfor %}
-{% if not configured %}<div class="notice"><b>Recebimento ainda não configurado.</b> Preencha a nova chave e o ID do número em config.json. Depois configure o endereço HTTPS na Datafy.</div>{% endif %}
-<section><h2>Captura automática dos disparos</h2>
-{% if active %}<div class="notice success"><b>Campanha ativa: {{active.campaign}}</b><br>Desde {{date_text(active.started)}}. Os novos envios deste número serão associados a esta campanha.</div><form action="/campanha" method="post"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="acao" value="encerrar"><button>Encerrar captura da campanha</button></form>
-{% else %}<p>Ative uma campanha antes de disparar na Datafy. Os telefones e IDs serão registrados automaticamente pelo webhook.</p><form action="/campanha" method="post" class="toolbar"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="acao" value="ativar"><input name="nome" aria-label="Nome da campanha" placeholder="Ex.: Autorização do canal oficial" maxlength="150" required><button>Ativar campanha</button></form>{% endif %}
-<p class="muted">Use este número apenas para os disparos desta campanha enquanto a captura estiver ativa. A Datafy não informa o nome da campanha. Ao encerrar, entregas e respostas dos envios já registrados continuam sendo atualizadas.</p>
-{% if unlinked %}<div class="notice">{{unlinked}} envio(s) sem campanha identificada. Podem ser eventos antigos, recebidos fora de uma campanha ou sem o status inicial de envio. Eles constam no histórico do Excel de todas as campanhas.</div>{% endif %}
-</section>
-<div class="toolbar"><form method="get"><label>Campanha <select name="campanha"><option value="">Todas as campanhas</option>{% for c in campaigns %}<option {% if c==campaign %}selected{% endif %}>{{c}}</option>{% endfor %}</select></label> <button>Filtrar / atualizar</button></form><a class="button" href="{{url_for('export',campanha=campaign)}}">Baixar Excel</a><a href="/backup">Salvar backup</a></div>
-<p class="muted">Último evento armazenado: {{last or 'Nenhum'}} · Horários de Brasília · Atualize a página para ver novos eventos.</p>{% if hosted %}<form action="/sair" method="post" style="float:right"><input type="hidden" name="csrf" value="{{session.csrf}}"><button>Sair</button></form>{% endif %}
-<div class="cards"><div class="card">Contatos na base<strong>{{totals.total}}</strong></div><div class="card">Entregues<strong>{{totals.delivered}}</strong><small>Inclui as lidas</small></div><div class="card">Leituras informadas<strong>{{totals.read}}</strong></div>{% for key,label in labels.items() %}<div class="card">{{label}}<strong>{{totals[key]}}</strong><small>{{'%.1f'|format(totals[key]*100/totals.total if totals.total else 0)}}% da base</small></div>{% endfor %}</div>
-<section><h2>Contatos da campanha</h2><p class="muted">Importar um contato não comprova o envio. Sem confirmação da Datafy, a entrega aparece como “Não informado”. A resposta vinculada mais recente determina o resultado.</p><div class="scroll"><table><thead><tr><th>Contato / campanha</th><th>Telefone</th><th>Entrega</th><th>Resultado</th><th>Resposta / opção</th><th>Data</th></tr></thead><tbody>{% for r in rows %}<tr><td>{{r.name}}<br><small>{{r.campaign}}</small></td><td>{{r.phone}}</td><td>{{r.delivery}}</td><td><span class="badge {{r.result}}">{{labels[r.result]}}</span></td><td class="answer">{{r.answer or '—'}}{% if r.choice %}<br><small>Opção: {{r.choice}}</small>{% endif %}</td><td>{{r.when or '—'}}</td></tr>{% else %}<tr><td colspan="6">Nenhum envio registrado nesta seleção. Ative uma campanha e inicie os disparos após conectar o webhook.</td></tr>{% endfor %}</tbody></table></div></section>
-<section><details><summary>Adicionar nomes aos contatos — opcional</summary><p>A captura funciona sem planilha. Para adicionar nomes, importe CSV UTF-8 com <b>campanha, nome, telefone</b>. Use o mesmo nome da campanha e telefone com DDI e DDD.</p><form action="/importar" method="post" enctype="multipart/form-data" class="toolbar"><input type="hidden" name="csrf" value="{{session.csrf}}"><input aria-label="Arquivo CSV" type="file" name="arquivo" accept=".csv" required><button>Importar nomes</button><a href="/modelo.csv">Baixar modelo vazio</a></form><p class="muted">Contatos importados sem evento de envio aparecem como “Não informado”. Não é necessário preencher IDs.</p></details></section>
-<section><h2>Respostas para revisão</h2><p class="muted">Até 200 respostas mais recentes sem vínculo ou com conteúdo não classificado. Esta fila abrange todas as campanhas. O Excel de todas as campanhas contém o histórico completo.</p>{% for e in inbox %}<div class="reply"><b>{{e.phone}}</b> · {{date_text(e.ts)}}<p>{{e.body}}</p>{% if e.choice %}<p class="muted">Identificador da opção: {{e.choice}}</p>{% endif %}<form action="/revisar" method="post" class="toolbar"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="evento" value="{{e.id}}"><select name="contato" aria-label="Campanha do contato" required><option value="">Escolha a campanha deste contato</option>{% for c in all_contacts if c.phone==e.phone %}<option value="{{c.id}}" {% if e.contact_id==c.id %}selected{% endif %}>{{c.campaign}} — {{c.name}}</option>{% endfor %}</select><select name="resultado" aria-label="Resultado"><option value="revisar">Manter em revisão</option><option value="aceitou">Aceitou</option><option value="recusou">Recusou</option></select><button>Salvar revisão</button></form></div>{% else %}<p>Nenhuma resposta aguardando revisão.</p>{% endfor %}</section>
-<section><h2>Regras de classificação</h2><p>Copie os identificadores das opções mostrados na fila de revisão. Um por linha. Texto livre, áudio e opções desconhecidas ficam em revisão.</p><form action="/regras" method="post"><input type="hidden" name="csrf" value="{{session.csrf}}"><div class="toolbar"><label>Aceitou<br><textarea name="aceite" rows="4">{{rules.get('aceite',[])|join('\n')}}</textarea></label><label>Recusou<br><textarea name="recusa" rows="4">{{rules.get('recusa',[])|join('\n')}}</textarea></label><button>Salvar regras</button></div></form><p class="muted">As regras salvas aqui têm prioridade sobre config.json e valem para os próximos eventos, sem reiniciar. Respostas anteriores podem ser revisadas manualmente.</p></section>
-<footer>Dados armazenados nesta máquina. Nenhuma mensagem é enviada pelo sistema. Respostas antigas dependem de histórico fornecido pela Datafy.</footer></main></body></html>
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Disparos WhatsApp</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+{% macro tick(status) -%}
+  {%- if status == 'read' or status == 'delivered' -%}
+  <svg class="tick" viewBox="0 0 18 18" aria-hidden="true"><path fill="currentColor" d="M17.4 4.3l-.8-.6a.4.4 0 00-.5.1L9.7 11.9l-.9-.8.9-1.2L15 3.3a.4.4 0 00-.1-.5l-.8-.6a.4.4 0 00-.5.1L7.4 10.4 5 8.3a.4.4 0 00-.5 0l-.7.7a.4.4 0 000 .5l3.4 3.2c.2.2.4.2.6 0l.5-.6 1.4 1.3c.2.2.4.2.6 0l7.1-8.6a.4.4 0 000-.5zM1 9.6l3.4 3.2c.2.2.4.2.6 0l.5-.6-4.1-3.9a.4.4 0 00-.5 0l-.7.7a.4.4 0 000 .5z"/></svg>
+  {%- elif status == 'sent' -%}
+  <svg class="tick" viewBox="0 0 18 18" aria-hidden="true"><path fill="currentColor" d="M14.6 4.3l-.8-.6a.4.4 0 00-.5.1L6.9 11.9 3.8 9a.4.4 0 00-.5 0l-.7.7a.4.4 0 000 .5l4.1 3.9c.2.2.4.2.6 0l7.4-9.3a.4.4 0 00-.1-.5z"/></svg>
+  {%- elif status == 'failed' -%}
+  <svg class="tick" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 4.8v5M9 12.4v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+  {%- else -%}
+  <svg class="tick" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M9 5v4.2l2.6 1.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  {%- endif -%}
+{%- endmacro %}
+{% macro pct(n, d) %}{{ '%.0f'|format(n*100/d if d else 0) }}%{% endmacro %}
 
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">
+      <span class="brand-icon"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M12 2a10 10 0 00-8.6 15.1L2 22l5-1.3A10 10 0 1012 2zm5.3 14.2c-.2.6-1.3 1.2-1.8 1.3-.5 0-1 .2-3.3-.7-2.8-1.1-4.5-4-4.7-4.2-.1-.2-1.1-1.5-1.1-2.9s.7-2 1-2.3c.2-.3.5-.3.7-.3h.5c.2 0 .4 0 .6.5l.9 2.1c0 .2.1.4 0 .5l-.3.5-.4.5c-.1.1-.3.3-.1.6.2.3.8 1.3 1.7 2.1 1.2 1 2.1 1.3 2.4 1.5.3.1.5.1.6-.1l.9-1.1c.2-.3.4-.2.6-.1l2 1c.3.1.5.2.5.3.1.1.1.7-.1 1.3z"/></svg></span>
+      <div>Disparos WhatsApp<small>Quem recebeu, quem leu e quem respondeu</small></div>
+    </div>
+    {% if hosted %}<form action="/sair" method="post"><input type="hidden" name="csrf" value="{{session.csrf}}"><button class="logout">Sair</button></form>{% endif %}
+  </div>
+  <nav class="tabs">
+    <a href="{{ url_for('index', campanha=campaign) }}" class="{{ 'on' if tab=='painel' }}">Acompanhamento</a>
+    <a href="{{ url_for('index', aba='config') }}" class="{{ 'on' if tab=='config' }}">Configurações{% if inbox %} <span class="count" title="Respostas para revisar">{{ inbox|length }}</span>{% endif %}</a>
+  </nav>
+</header>
+
+<main>
+{% for message in get_flashed_messages() %}<div class="flash">{{message}}</div>{% endfor %}
+{% if not configured %}<div class="flash"><b>Recebimento ainda não configurado.</b> Defina a chave do webhook e o ID do número (config.json ou variáveis do Render).</div>{% endif %}
+
+{% if tab == 'painel' %}
+{# ───────────── ACOMPANHAMENTO ───────────── #}
+<div class="bar">
+  <form method="get" class="row">
+    <select id="campaign-pick" name="campanha" aria-label="Campanha">
+      <option value="" {% if not campaign %}selected{% endif %}>Todas as campanhas</option>
+      {% for c in campaigns %}<option {% if c==campaign %}selected{% endif %}>{{c}}</option>{% endfor %}
+    </select>
+    <noscript><button>Ver</button></noscript>
+  </form>
+  {% if active %}
+    <span class="live"><i></i>Capturando: {{active.campaign}}</span>
+  {% else %}
+    <span class="idle">Nenhuma campanha capturando · <a href="{{ url_for('index', aba='config') }}">ativar</a></span>
+  {% endif %}
+  <span class="spacer"></span>
+  <span class="updated" id="updated">Atualizado agora</span>
+  <a class="btn ghost" href="{{url_for('export',campanha=campaign)}}">
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>Baixar Excel
+  </a>
+</div>
+
+<div id="live">
+{% set base = totals.sent %}
+{% set show_results = rules.get('aceite') or rules.get('recusa') or totals.aceitou or totals.recusou %}
+<div class="funnel">
+  <button type="button" class="stat" data-filter="all">
+    <span class="label">{{ tick('sent') }} Enviados</span>
+    <strong>{{ totals.sent }}</strong>
+    <span class="pct">{% if totals.total > totals.sent %}de {{ totals.total }} contatos{% else %}disparos registrados{% endif %}</span>
+    <div class="meter"><span style="width:{{ pct(totals.sent, totals.total) }}"></span></div>
+  </button>
+  <button type="button" class="stat" data-filter="delivered">
+    <span class="label s-delivered">{{ tick('delivered') }} Entregues</span>
+    <strong>{{ totals.delivered }}</strong>
+    <span class="pct">{{ pct(totals.delivered, base) }} dos enviados</span>
+    <div class="meter"><span style="width:{{ pct(totals.delivered, base) }}"></span></div>
+  </button>
+  <button type="button" class="stat read" data-filter="read">
+    <span class="label s-read">{{ tick('read') }} Lidas</span>
+    <strong>{{ totals.read }}</strong>
+    <span class="pct">{{ pct(totals.read, base) }} dos enviados</span>
+    <div class="meter"><span style="width:{{ pct(totals.read, base) }}"></span></div>
+  </button>
+  <button type="button" class="stat replied" data-filter="replied">
+    <span class="label"><svg class="tick" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M4 5h16v11H9l-5 4z"/></svg> Responderam</span>
+    <strong>{{ totals.replied }}</strong>
+    <span class="pct">{{ pct(totals.replied, base) }} dos enviados</span>
+    <div class="meter"><span style="width:{{ pct(totals.replied, base) }}"></span></div>
+  </button>
+  <button type="button" class="stat failed" data-filter="failed">
+    <span class="label s-failed">{{ tick('failed') }} Falharam</span>
+    <strong>{{ totals.failed }}</strong>
+    <span class="pct">{{ pct(totals.failed, base) }} dos enviados</span>
+    <div class="meter"><span style="width:{{ pct(totals.failed, base) }}"></span></div>
+  </button>
+</div>
+
+{% if show_results %}
+<div class="outcomes">
+  Classificação das respostas:
+  <span class="badge aceitou">{{ labels.aceitou }} · {{ totals.aceitou }}</span>
+  <span class="badge recusou">{{ labels.recusou }} · {{ totals.recusou }}</span>
+  <span class="badge revisar">{{ labels.revisar }} · {{ totals.revisar }}</span>
+</div>
+{% endif %}
+
+<section class="card" id="contacts">
+  {% set n_pending = rows|selectattr('status','in',['sent','none'])|list|length %}
+  <div class="filters">
+    <button type="button" class="chip" data-filter="all">Todos <b>{{ rows|length }}</b></button>
+    <button type="button" class="chip" data-filter="pending">Aguardando entrega <b>{{ n_pending }}</b></button>
+    <button type="button" class="chip" data-filter="delivered">Entregues <b>{{ totals.delivered }}</b></button>
+    <button type="button" class="chip" data-filter="read">Lidas <b>{{ totals.read }}</b></button>
+    <button type="button" class="chip" data-filter="replied">Responderam <b>{{ totals.replied }}</b></button>
+    <button type="button" class="chip" data-filter="failed">Falharam <b>{{ totals.failed }}</b></button>
+    <input id="search" class="search" type="search" placeholder="Buscar nome ou telefone" aria-label="Buscar contato">
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr>
+      <th>Contato</th><th>Status</th><th>Resposta</th>
+      {% if show_results %}<th>Resultado</th>{% endif %}
+      {% if not campaign %}<th class="hide-sm">Campanha</th>{% endif %}
+    </tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr data-status="{{ r.status }}" data-replied="{{ 1 if r.replied else 0 }}" data-search="{{ (r.name_fmt ~ r.phone)|lower|replace(' ','') }}">
+        <td><div class="who">
+          <span class="avatar">{% if r.name_fmt %}{{ r.name_fmt[:1]|upper }}{% else %}<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12a4.5 4.5 0 10-4.5-4.5A4.5 4.5 0 0012 12zm0 2c-4 0-8 2-8 5v1h16v-1c0-3-4-5-8-5z"/></svg>{% endif %}</span>
+          <div>{% if r.name_fmt %}<b>{{ r.name_fmt }}</b><small>{{ r.phone_fmt }}</small>{% else %}<b>{{ r.phone_fmt }}</b>{% endif %}</div>
+        </div></td>
+        <td><span class="state s-{{ r.status }}">{{ tick(r.status) }}<span>{{ r.delivery }}{% if r.status_when %}<small>{{ r.status_when[:16] }}</small>{% endif %}</span></span></td>
+        <td>{% if r.replied %}<span class="bubble">{{ r.answer or '—' }}<small>{{ r.when[:16] }}</small></span>{% else %}<span class="muted">—</span>{% endif %}</td>
+        {% if show_results %}<td>{% if r.replied %}<span class="badge {{ r.result }}">{{ labels[r.result] }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}
+        {% if not campaign %}<td class="hide-sm"><small>{{ r.campaign }}</small></td>{% endif %}
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% if not rows %}
+    <div class="empty">
+      <svg width="48" height="48" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M4 5h16v11H9l-5 4z"/></svg>
+      <p><b>Nenhum disparo registrado{% if campaign %} em “{{ campaign }}”{% endif %}.</b><br>
+      {% if active %}Os envios aparecem aqui automaticamente assim que a Datafy disparar.{% else %}Ative uma campanha em <a href="{{ url_for('index', aba='config') }}">Configurações</a> antes de disparar.{% endif %}</p>
+    </div>
+  {% endif %}
+  <div id="no-match" class="empty hidden">Nenhum contato neste filtro.</div>
+</section>
+<p class="muted">Último evento recebido: {{ last or 'nenhum' }} · Horário de Brasília · A página se atualiza sozinha a cada 30 segundos.</p>
+</div>
+
+{% else %}
+{# ───────────── CONFIGURAÇÕES ───────────── #}
+<div class="config-stack">
+<div class="grid2">
+  <section class="card">
+    <h2>Campanha</h2>
+    <p class="muted">A Datafy não informa o nome da campanha. Por isso, ative aqui <b>antes</b> de disparar: tudo que sair do número enquanto ela estiver ativa entra nela.</p>
+    {% if active %}
+      <div class="status-box on"><b><span class="live" style="padding:0;background:none"><i></i>{{active.campaign}}</span></b>Capturando desde {{date_text(active.started)}}</div>
+      <form action="/campanha" method="post"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="acao" value="encerrar"><button class="danger">Encerrar captura</button></form>
+      <p class="help">Depois de encerrar, entregas, leituras e respostas dos envios já registrados continuam chegando normalmente.</p>
+    {% else %}
+      <div class="status-box"><b>Nenhuma campanha ativa</b>Disparos feitos agora ficam sem campanha.</div>
+      <form action="/campanha" method="post" class="row"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="acao" value="ativar"><input name="nome" aria-label="Nome da campanha" placeholder="Nome da campanha" maxlength="150" required style="flex:1"><button>Ativar campanha</button></form>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Dados e manutenção</h2>
+    <div class="row" style="margin:12px 0">
+      <a class="btn ghost" href="{{url_for('export')}}">Excel de todas as campanhas</a>
+      <a class="btn ghost" href="/backup">Salvar backup</a>
+    </div>
+    {% if unlinked %}<p class="help"><b>{{unlinked}} envio(s) sem campanha.</b> Foram disparados enquanto nenhuma campanha estava ativa. Aparecem no Excel de todas as campanhas.</p>{% endif %}
+    <p class="help">Último evento recebido: {{ last or 'nenhum' }}.</p>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Respostas para revisar {% if inbox %}<span class="count">{{ inbox|length }}</span>{% endif %}</h2>
+  <p class="muted">Respostas em texto livre, áudio ou botões sem regra. Classifique manualmente se precisar.</p>
+  {% for e in inbox %}
+  <div class="reply">
+    <b>{{ pretty_phone(e.phone) }}</b> <small>· {{date_text(e.ts)}}</small><br>
+    <span class="bubble">{{e.body}}</span>
+    {% if e.choice %}<p class="help">ID do botão: <code>{{e.choice}}</code></p>{% endif %}
+    <form action="/revisar" method="post" class="row"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="evento" value="{{e.id}}">
+      <select name="contato" aria-label="Campanha do contato" required><option value="">Campanha deste contato…</option>{% for c in all_contacts if c.phone==e.phone %}<option value="{{c.id}}" {% if e.contact_id==c.id %}selected{% endif %}>{{c.campaign}}{% if c.name != c.phone %} — {{c.name}}{% endif %}</option>{% endfor %}</select>
+      <select name="resultado" aria-label="Resultado"><option value="revisar">Manter em revisão</option><option value="aceitou">Aceitou</option><option value="recusou">Recusou</option></select>
+      <button>Salvar</button>
+    </form>
+  </div>
+  {% else %}<p>Nenhuma resposta aguardando revisão. 🎉</p>{% endfor %}
+</section>
+
+<section class="card">
+  <details>
+    <summary>Classificação automática das respostas (Aceitou / Recusou)</summary>
+    <p class="muted">Só é útil em campanhas com botões do tipo “Sim, autorizo” / “Não”. Cole o <b>ID do botão</b> (aparece na fila de revisão acima), um por linha. Sem regras, as respostas aparecem só como “respondeu”.</p>
+    <form action="/regras" method="post"><input type="hidden" name="csrf" value="{{session.csrf}}">
+      <div class="rules">
+        <label>Botões que contam como “Aceitou”<textarea name="aceite" rows="4">{{rules.get('aceite',[])|join('\n')}}</textarea></label>
+        <label>Botões que contam como “Recusou”<textarea name="recusa" rows="4">{{rules.get('recusa',[])|join('\n')}}</textarea></label>
+      </div>
+      <p><button>Salvar regras</button></p>
+    </form>
+  </details>
+</section>
+
+<section class="card">
+  <details>
+    <summary>Adicionar nomes aos contatos (opcional)</summary>
+    <p class="muted">Sem isso, os contatos aparecem só pelo telefone. Importe um CSV com as colunas <b>campanha, nome, telefone</b>, usando o mesmo nome da campanha e telefone com DDI e DDD (ex.: 5571999999999).</p>
+    <form action="/importar" method="post" enctype="multipart/form-data" class="row"><input type="hidden" name="csrf" value="{{session.csrf}}"><input aria-label="Arquivo CSV" type="file" name="arquivo" accept=".csv" required><button>Importar nomes</button><a href="/modelo.csv">Baixar modelo</a></form>
+  </details>
+</section>
+</div>
+{% endif %}
+</main>
+<footer>Nenhuma mensagem é enviada por este painel. Ele só registra o que a Datafy informa.</footer>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
