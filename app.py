@@ -291,7 +291,7 @@ def create_apps(db_path=None, settings=None):
 
     def report(campaign=''):
         with connect() as db:
-            contacts = db.execute('SELECT * FROM contacts WHERE (?="" OR campaign=?) ORDER BY campaign,name,phone', (campaign,campaign)).fetchall()
+            contacts = db.execute("SELECT * FROM contacts WHERE (?='' OR campaign=?) ORDER BY campaign,name,phone", (campaign,campaign)).fetchall()
             events = db.execute('SELECT * FROM events WHERE contact_id IS NOT NULL ORDER BY ts,id').fetchall()
         by_contact = {}
         for ev in events:
