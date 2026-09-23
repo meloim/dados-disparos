@@ -170,15 +170,41 @@ def pretty_phone(value):
         return f'+55 ({digits[2:4]}) {local[:-4]}-{local[-4:]}'
     return '+' + digits if digits else ''
 
-def date_text(value):
-    if not value:
-        return ''
+def brasilia(value):
     try:
         tz = ZoneInfo('America/Sao_Paulo')
     except ZoneInfoNotFoundError:
         from datetime import timedelta
         tz = timezone(timedelta(hours=-3))
-    return datetime.fromtimestamp(int(value), tz).strftime('%d/%m/%Y %H:%M:%S')
+    return datetime.fromtimestamp(int(value), tz)
+
+def date_text(value):
+    if not value:
+        return ''
+    return brasilia(value).strftime('%d/%m/%Y %H:%M:%S')
+
+def duration_text(seconds):
+    if seconds is None:
+        return ''
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f'{max(minutes, 1)} min'
+    hours = seconds / 3600
+    if hours < 24:
+        return f'{hours:.1f} h'.replace('.0 h', ' h').replace('.', ',')
+    return f'{hours / 24:.1f} dias'.replace('.0 dias', ' dias').replace('.', ',')
+
+# Faixas de tempo entre o disparo e a leitura/resposta.
+DELAY_BUCKETS = [(300, 'até 5 min'), (900, '5–15 min'), (3600, '15–60 min'), (3 * 3600, '1–3 h'),
+                 (6 * 3600, '3–6 h'), (86400, '6–24 h'), (3 * 86400, '1–3 dias'), (float('inf'), '+3 dias')]
+WEEKDAYS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
+
+def median(values):
+    values = sorted(values)
+    if not values:
+        return None
+    mid = len(values) // 2
+    return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
 
 def create_apps(db_path=None, settings=None):
     if settings is None:
@@ -503,9 +529,102 @@ def create_apps(db_path=None, settings=None):
             {r['fail_reason']: sum(x['fail_reason']==r['fail_reason'] for x in rows) for r in rows if r['fail_reason']}.items()), reverse=True)
         return rows, totals
 
+    def analytics(days, campaign=''):
+        """Dados dos gráficos: envios feitos no período (e na campanha, se escolhida)."""
+        cutoff = time.time() - days * 86400 if days else 0
+        with connect() as db:
+            owner = {r['id']: r['campaign'] for r in db.execute('SELECT id,campaign FROM contacts').fetchall()}
+            events = db.execute('''SELECT kind,body,ts,contact_id,result FROM events
+                WHERE contact_id IS NOT NULL ORDER BY ts''').fetchall()
+            failures = db.execute("""SELECT context,raw,ts,contact_id FROM events WHERE kind='status' AND body='failed'
+                AND COALESCE(association,'')<>? ORDER BY ts""",(DISCARDED,)).fetchall()
+        people = {}
+        for e in events:
+            p = people.setdefault(e['contact_id'], {'send': None, 'delivered': False, 'read': None, 'replies': []})
+            if e['kind'] == 'status':
+                p['send'] = e['ts'] if p['send'] is None else min(p['send'], e['ts'])
+                if e['body'] in ('delivered', 'read'):
+                    p['delivered'] = True
+                if e['body'] == 'read' and p['read'] is None:
+                    p['read'] = e['ts']
+            else:
+                p['replies'].append(e)
+        chosen = {cid: p for cid, p in people.items()
+                  if p['send'] and p['send'] >= cutoff and (not campaign or owner.get(cid) == campaign)}
+
+        # 1. Comparativo entre campanhas (ignora o filtro de campanha, respeita o período).
+        per = {}
+        for cid, p in people.items():
+            if not p['send'] or p['send'] < cutoff:
+                continue
+            c = per.setdefault(owner[cid], {'name': owner[cid], 'sent': 0, 'delivered': 0, 'read': 0,
+                                            'replied': 0, 'accepted': 0, 'last': 0})
+            c['sent'] += 1
+            c['delivered'] += p['delivered']
+            c['read'] += bool(p['read'])
+            c['replied'] += bool(p['replies'])
+            c['accepted'] += bool(p['replies']) and p['replies'][-1]['result'] == 'aceitou'
+            c['last'] = max(c['last'], p['send'])
+        compare = sorted(per.values(), key=lambda c: c['last'], reverse=True)[:8]
+        for c in compare:
+            for k in ('delivered', 'read', 'replied', 'accepted'):
+                c[k + '_pct'] = round(c[k] * 100 / c['sent'], 1) if c['sent'] else 0
+
+        # 2. Tempo entre o disparo e a leitura/resposta.
+        read_delays = [p['read'] - p['send'] for p in chosen.values() if p['read'] and p['read'] >= p['send']]
+        reply_delays = []
+        for p in chosen.values():
+            after = [r['ts'] for r in p['replies'] if r['ts'] >= p['send']]
+            if after:
+                reply_delays.append(min(after) - p['send'])
+        def bucket(values):
+            counts = [0] * len(DELAY_BUCKETS)
+            for v in values:
+                counts[next(i for i, (edge, _) in enumerate(DELAY_BUCKETS) if v < edge)] += 1
+            return [round(n * 100 / len(values), 1) if values else 0 for n in counts], counts
+        read_pct, read_n = bucket(read_delays)
+        reply_pct, reply_n = bucket(reply_delays)
+
+        # 3. Dia da semana × hora das respostas (horário de Brasília).
+        heat = [[0] * 24 for _ in WEEKDAYS]
+        replies_total = 0
+        for p in chosen.values():
+            for r in p['replies']:
+                local = brasilia(r['ts'])
+                heat[local.weekday()][local.hour] += 1
+                replies_total += 1
+        peak = max(((heat[d][h], d, h) for d in range(7) for h in range(24)), default=(0, 0, 0))
+
+        # 4. Motivos das falhas (inclui envios sem campanha quando não há filtro de campanha).
+        reasons, seen = {}, set()
+        for f in failures:
+            if f['ts'] < cutoff or f['context'] in seen:
+                continue
+            if campaign and owner.get(f['contact_id']) != campaign:
+                continue
+            seen.add(f['context'])
+            reason = fail_reason(f['raw'])
+            reasons[reason] = reasons.get(reason, 0) + 1
+        ranked = sorted(reasons.items(), key=lambda kv: kv[1], reverse=True)
+        if len(ranked) > 7:
+            ranked = ranked[:6] + [('Outros motivos', sum(n for _, n in ranked[6:]))]
+
+        best = max((c for c in compare if c['sent'] >= 1), key=lambda c: c['replied_pct'], default=None)
+        return {
+            'sent': len(chosen), 'replies': replies_total,
+            'compare': compare, 'show_accepted': any(c['accepted'] for c in compare),
+            'best': best if len(compare) > 1 else None,
+            'buckets': [label for _, label in DELAY_BUCKETS],
+            'read_pct': read_pct, 'read_n': read_n, 'reply_pct': reply_pct, 'reply_n': reply_n,
+            'reads': len(read_delays), 'answered': len(reply_delays),
+            'median_read': duration_text(median(read_delays)), 'median_reply': duration_text(median(reply_delays)),
+            'weekdays': WEEKDAYS, 'heat': heat, 'peak': {'n': peak[0], 'day': WEEKDAYS[peak[1]], 'hour': peak[2]},
+            'failures': [{'reason': r, 'n': n} for r, n in ranked], 'failed': sum(reasons.values()),
+        }
+
     @panel.get('/')
     def index():
-        tab = 'config' if request.args.get('aba') == 'config' else 'painel'
+        tab = request.args.get('aba') if request.args.get('aba') in ('config', 'graficos') else 'painel'
         all_rows = report()[0]
         with connect() as db:
             active = db.execute('SELECT * FROM campaign_windows WHERE ended IS NULL').fetchone()
@@ -540,7 +659,15 @@ def create_apps(db_path=None, settings=None):
         unlinked_sends = sorted(groups.values(), key=lambda g: g['last'], reverse=True)[:500]
         rules = get_rules()
         show_results = bool(totals['aceitou'] or totals['recusou'] or rules.get('aceite') or rules.get('recusa'))
+        period = request.args.get('periodo', '30')
+        period = period if period in ('7', '30', '90', 'tudo') else '30'
+        charts = None
+        if tab == 'graficos':
+            # Nos gráficos, "Todas" é o padrão: o comparativo já mostra cada campanha.
+            campaign = request.args.get('campanha', '')
+            charts = analytics(0 if period == 'tudo' else int(period), campaign)
         return render_template('index.html', rows=rows, totals=totals, campaigns=campaigns,
+            charts=charts, period=period,
             campaign=campaign, inbox=inbox, outside=outside, labels=LABELS, date_text=date_text,
             configured=bool(settings.get('webhook_secret') and settings.get('phone_number_id')),
             last=date_text(last), rules=rules, active=active, show_results=show_results,

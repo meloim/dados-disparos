@@ -43,6 +43,7 @@
   </div>
   <nav class="tabs">
     <a href="{{ url_for('index', campanha=campaign) }}" class="{{ 'on' if tab=='painel' }}">Acompanhamento</a>
+    <a href="{{ url_for('index', aba='graficos') }}" class="{{ 'on' if tab=='graficos' }}">Gráficos</a>
     {% set pending = inbox|length + unlinked_sends|length + outside|length %}
     <a href="{{ url_for('index', aba='config') }}" class="{{ 'on' if tab=='config' }}">Configurações{% if pending %} <span class="count" title="Itens pedindo atenção">{{ pending }}</span>{% endif %}</a>
   </nav>
@@ -170,6 +171,78 @@
 </section>
 <p class="muted">Último evento recebido: {{ last or 'nenhum' }} · Horário de Brasília · A página se atualiza sozinha a cada 30 segundos.</p>
 </div>
+
+{% elif tab == 'graficos' %}
+{# ───────────── GRÁFICOS ───────────── #}
+{% set periods = [('7','7 dias'),('30','30 dias'),('90','90 dias'),('tudo','Tudo')] %}
+<div class="bar chart-filters">
+  <div class="seg" role="group" aria-label="Período">
+    {% for key, label in periods %}<a href="{{ url_for('index', aba='graficos', periodo=key, campanha=campaign) }}" class="{{ 'on' if period==key }}"{% if period==key %} aria-current="true"{% endif %}>{{ label }}</a>{% endfor %}
+  </div>
+  <form method="get" class="row">
+    <input type="hidden" name="aba" value="graficos"><input type="hidden" name="periodo" value="{{ period }}">
+    <select id="campaign-pick" name="campanha" aria-label="Campanha">
+      <option value="" {% if not campaign %}selected{% endif %}>Todas as campanhas</option>
+      {% for c in campaigns %}<option {% if c==campaign %}selected{% endif %}>{{c}}</option>{% endfor %}
+    </select>
+    <noscript><button>Ver</button></noscript>
+  </form>
+  <span class="spacer"></span>
+  <span class="updated">{{ charts.sent }} disparo(s) · {{ charts.replies }} resposta(s) no período</span>
+</div>
+
+{% macro few(n, minimum, what) %}{% if n < minimum %}<p class="few">Poucos dados ainda ({{ n }} {{ what }}). O padrão pode mudar bastante com as próximas campanhas.</p>{% endif %}{% endmacro %}
+{% macro empty_chart(text) %}<div class="chart-empty">{{ text }}</div>{% endmacro %}
+
+<div class="charts">
+  <section class="card chart-card wide">
+    <h2>Qual campanha funcionou melhor?</h2>
+    <p class="headline">{% if charts.best %}Maior taxa de resposta: <b>{{ charts.best.name }}</b>, com {{ '%.0f'|format(charts.best.replied_pct) }}% dos enviados respondendo.{% elif charts.compare %}Só uma campanha no período. O comparativo aparece a partir de duas.{% else %}Nenhum disparo no período.{% endif %}</p>
+    {% if charts.compare %}
+    <div class="legend">
+      <span><i class="k k1"></i>Entregues</span><span><i class="k k2"></i>Lidas</span><span><i class="k k3"></i>Responderam</span>{% if charts.show_accepted %}<span><i class="k k4"></i>Aceitaram</span>{% endif %}
+      <span class="muted">% dos enviados de cada campanha · até 8 campanhas mais recentes</span>
+    </div>
+    <div class="chart" data-chart="compare"></div>
+    <details class="table-view"><summary>Ver números</summary><div class="scroll"><table>
+      <thead><tr><th>Campanha</th><th>Enviados</th><th>Entregues</th><th>Lidas</th><th>Responderam</th>{% if charts.show_accepted %}<th>Aceitaram</th>{% endif %}</tr></thead>
+      <tbody>{% for c in charts.compare %}<tr><td>{{ c.name }}</td><td>{{ c.sent }}</td><td>{{ c.delivered }} ({{ '%.0f'|format(c.delivered_pct) }}%)</td><td>{{ c.read }} ({{ '%.0f'|format(c.read_pct) }}%)</td><td>{{ c.replied }} ({{ '%.0f'|format(c.replied_pct) }}%)</td>{% if charts.show_accepted %}<td>{{ c.accepted }} ({{ '%.0f'|format(c.accepted_pct) }}%)</td>{% endif %}</tr>{% endfor %}</tbody>
+    </table></div></details>
+    {% else %}{{ empty_chart('Sem disparos no período escolhido.') }}{% endif %}
+  </section>
+
+  <section class="card chart-card">
+    <h2>Quanto tempo as pessoas levam para ler e responder?</h2>
+    <p class="headline">{% if charts.answered %}Metade das respostas chegou em até <b>{{ charts.median_reply }}</b> depois do disparo{% if charts.reads %}; metade das leituras, em até <b>{{ charts.median_read }}</b>{% endif %}.{% elif charts.reads %}Metade das leituras aconteceu em até <b>{{ charts.median_read }}</b>. Ainda sem respostas.{% else %}Ainda sem leituras ou respostas no período.{% endif %}</p>
+    {{ few(charts.answered, 20, 'respostas') }}
+    {% if charts.reads or charts.answered %}
+    <div class="legend"><span><i class="k c1"></i>Leituras</span><span><i class="k c2"></i>Respostas</span><span class="muted">% de cada uma, por tempo depois do disparo</span></div>
+    <div class="chart" data-chart="delays"></div>
+    <details class="table-view"><summary>Ver números</summary><div class="scroll"><table>
+      <thead><tr><th>Tempo depois do disparo</th><th>Leituras</th><th>Respostas</th></tr></thead>
+      <tbody>{% for label in charts.buckets %}<tr><td>{{ label }}</td><td>{{ charts.read_n[loop.index0] }} ({{ '%.0f'|format(charts.read_pct[loop.index0]) }}%)</td><td>{{ charts.reply_n[loop.index0] }} ({{ '%.0f'|format(charts.reply_pct[loop.index0]) }}%)</td></tr>{% endfor %}</tbody>
+    </table></div></details>
+    {% else %}{{ empty_chart('Os tempos aparecem quando as pessoas começarem a ler e responder.') }}{% endif %}
+  </section>
+
+  <section class="card chart-card">
+    <h2>Em que dia e horário as pessoas mais respondem?</h2>
+    <p class="headline">{% if charts.peak.n %}Horário com mais respostas: <b>{{ charts.peak.day }}, {{ charts.peak.hour }}h</b> ({{ charts.peak.n }} resposta{{ 's' if charts.peak.n > 1 }}). Horário de Brasília.{% else %}Ainda sem respostas no período.{% endif %}</p>
+    {{ few(charts.replies, 50, 'respostas') }}
+    {% if charts.replies %}
+    <div class="chart" data-chart="heat"></div>
+    <div class="legend heat-scale"><span class="muted">Menos</span><i class="ramp"></i><span class="muted">Mais respostas</span></div>
+    {% else %}{{ empty_chart('O mapa aparece quando chegarem respostas.') }}{% endif %}
+  </section>
+
+  <section class="card chart-card wide">
+    <h2>Por que os envios falharam?</h2>
+    <p class="headline">{% if charts.failures %}Principal motivo: <b>{{ charts.failures[0].reason }}</b> ({{ charts.failures[0].n }} de {{ charts.failed }} falha{{ 's' if charts.failed > 1 }}).{% else %}Nenhuma falha no período. 👌{% endif %}</p>
+    {% if charts.failures %}<div class="chart" data-chart="failures"></div>{% endif %}
+  </section>
+</div>
+<script type="application/json" id="chart-data">{{ charts|tojson }}</script>
+<script src="{{ url_for('static', filename='graficos.js') }}"></script>
 
 {% else %}
 {# ───────────── CONFIGURAÇÕES ───────────── #}

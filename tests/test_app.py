@@ -60,8 +60,9 @@ class Integration(unittest.TestCase):
             self.assertEqual(client.get('/').status_code,302)
             self.assertEqual(client.get('/healthz').status_code,200)
             # A tela de login precisa do CSS e da logo antes de entrar.
-            self.assertEqual(client.get('/static/app.css').status_code,200)
-            self.assertEqual(client.get('/static/logo-construir.svg').status_code,200)
+            for asset in ('/static/app.css','/static/logo-construir.svg'):
+                with client.get(asset) as response:
+                    self.assertEqual(response.status_code,200)
             self.assertEqual(client.post('/webhook/datafy').status_code,401)
             client.get('/login')
             with client.session_transaction() as sess: csrf=sess['csrf']
@@ -235,6 +236,20 @@ class Integration(unittest.TestCase):
         self.assertIn('Número sem WhatsApp',html)
         self.panel.post('/mover',data={'csrf':self.csrf,'acao':'descartar','envio':['wamid.t']})
         self.assertNotIn('wamid.t',self.panel.get('/?aba=config').get_data(as_text=True))
+    def test_charts_tab(self):
+        now=int(time.time())
+        self.assertEqual(self.panel.get('/?aba=graficos').status_code,200)
+        self.import_list('A','telefone\n5511911111111\n5511922222222\n')
+        self.import_list('B','telefone\n5511933333333\n')
+        failed=self.status_to('wamid.3','5511933333333',now-50,'failed');failed['errors']=[{'code':131026}]
+        self.send(statuses=[self.status_to('wamid.1','5511911111111',now-600),self.status_to('wamid.1','5511911111111',now-500,'read'),
+                            self.status_to('wamid.2','5511922222222',now-600),failed])
+        self.send([self.reply_from('r1','5511911111111',now-400,'Sim')])
+        html=self.panel.get('/?aba=graficos&periodo=7').get_data(as_text=True)
+        self.assertIn('Maior taxa de resposta',html)
+        self.assertIn('Número sem WhatsApp',html)
+        self.assertIn('"answered": 1',html)
+        self.assertEqual(self.panel.get('/?aba=graficos&periodo=tudo&campanha=B').status_code,200)
     def test_rules_persist_and_reject_overlap(self):
         self.panel.post('/regras',data={'csrf':self.csrf,'aceite':'YES','recusa':'yes'})
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM preferences'),0)
