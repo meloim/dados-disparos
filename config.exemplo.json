@@ -1,0 +1,8 @@
+{
+  "webhook_secret": "",
+  "phone_number_id": "",
+  "aceite": ["Sim, autorizo"],
+  "recusa": ["Não autorizo"],
+  "panel_port": 8765,
+  "webhook_port": 8766
+}
