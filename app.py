@@ -28,7 +28,77 @@ except ImportError:  # Local mode does not require PostgreSQL.
     psycopg = None
 
 ROOT = Path(__file__).resolve().parent
-LABELS = {'pendente': 'Sem resposta', 'aceitou': 'Aceitou', 'recusou': 'Recusou', 'revisar': 'Revisar'}
+LABELS = {'pendente': 'Sem resposta', 'aceitou': 'Aceitou', 'recusou': 'Recusou', 'revisar': 'A classificar', 'outra': 'Outra resposta'}
+MANUAL = 'Revisão manual local'
+DISCARDED = 'Descartado'
+
+# Respostas curtas reconhecidas sem regra cadastrada (primeira palavra ou frase inteira).
+POSITIVE = {'sim', 's', 'ss', 'quero', 'aceito', 'aceitar', 'autorizo', 'autorizar', 'confirmo', 'confirmar',
+            'confirmado', 'confirmada', 'ok', 'okay', 'pode', 'claro', 'positivo', 'yes', 'bora', 'concordo',
+            'tenho interesse', 'com certeza', 'de acordo', 'quero sim', 'pode sim', 'pode enviar', 'pode mandar', '👍'}
+NEGATIVE = {'nao', 'n', 'recuso', 'recusar', 'cancelar', 'cancela', 'sair', 'parar', 'pare', 'stop', 'negativo',
+            'no', 'remover', 'descadastrar', 'bloquear', 'nao quero', 'nao tenho interesse', 'sem interesse', 'nao autorizo', '👎'}
+
+# Palavras que só valem como resposta inteira ("Ok"), não como começo de frase ("Pode me explicar...").
+WEAK = {'ok', 'okay', 'pode', 'bora', 'no', 'n', 's'}
+# "Não sei", "não entendi"... são dúvidas, não recusas.
+UNSURE = {'sei', 'entendi', 'lembro', 'recebi', 'consigo', 'vi', 'conheco', 'entendo'}
+
+def reply_intent(text):
+    """'aceitou', 'recusou' ou '' para respostas curtas como "Sim, autorizo" ou "Não"."""
+    emoji = str(text).strip()
+    if '?' in emoji:  # Pergunta não é resposta.
+        return ''
+    plain = unicodedata.normalize('NFKD', emoji).encode('ascii', 'ignore').decode().lower()
+    plain = re.sub(r'[^a-z0-9 ]+', ' ', plain).split()
+    if not plain:
+        return 'aceitou' if emoji in POSITIVE else 'recusou' if emoji in NEGATIVE else ''
+    if len(plain) > 6:  # Texto longo precisa de leitura humana.
+        return ''
+    whole, first = ' '.join(plain), plain[0]
+    if first == 'nao' and len(plain) > 1 and plain[1] in UNSURE:
+        return ''
+    if whole in NEGATIVE or (first in NEGATIVE and first not in WEAK):
+        return 'recusou'
+    if whole in POSITIVE or (first in POSITIVE and first not in WEAK):
+        return 'aceitou'
+    return ''
+
+# Códigos de erro mais comuns da Cloud API, em linguagem do dia a dia.
+FAIL_REASONS = {
+    131026: 'Número sem WhatsApp ou que não pode receber a mensagem',
+    131047: 'Mais de 24h sem conversa com a pessoa: só template pode ser enviado',
+    131049: 'A Meta segurou a mensagem para evitar excesso de marketing para essa pessoa',
+    131050: 'A pessoa optou por não receber mensagens de marketing',
+    131042: 'Problema de pagamento na conta da Meta',
+    131048: 'Envio limitado pela Meta por excesso de bloqueios/denúncias',
+    131056: 'Muitas mensagens para o mesmo número em pouco tempo',
+    131051: 'Tipo de mensagem não suportado',
+    131052: 'Não foi possível baixar a mídia da mensagem',
+    131053: 'Não foi possível enviar a mídia da mensagem',
+    132000: 'Template com número errado de variáveis',
+    132001: 'Template não existe ou não foi aprovado nesse idioma',
+    132005: 'Texto do template ficou grande demais',
+    132007: 'Conteúdo do template viola as regras da Meta',
+    132012: 'Variáveis do template no formato errado',
+    132015: 'Template pausado pela Meta por baixa qualidade',
+    132016: 'Template desativado pela Meta',
+    130472: 'A Meta não entregou (número em experimento da Meta)',
+    131000: 'Erro interno do WhatsApp; tente de novo',
+    131021: 'Mensagem para o próprio número',
+    131031: 'Conta do WhatsApp Business bloqueada',
+    368: 'Conta temporariamente bloqueada por violar políticas',
+    470: 'Mais de 24h sem conversa com a pessoa: só template pode ser enviado',
+}
+
+def fail_reason(raw):
+    try:
+        err = (json.loads(raw).get('errors') or [{}])[0]
+    except (ValueError, TypeError, AttributeError):
+        return ''
+    code = err.get('code')
+    detail = (err.get('error_data') or {}).get('details') or err.get('message') or err.get('title') or ''
+    return FAIL_REASONS.get(code) or (f'{detail} (código {code})' if code else detail)
 
 def campaign_clock():
     return int(time.time())
@@ -56,7 +126,8 @@ def phone_key(value):
     return digits
 
 PHONE_HEADERS = {'telefone', 'phone', 'phone_number', 'numero', 'number', 'celular', 'whatsapp', 'wa_id', 'waid', 'fone', 'tel', 'mobile'}
-NAME_HEADERS = {'nome', 'name', 'nome_completo', 'cliente', 'first_name', 'primeiro_nome', 'full_name'}
+NAME_HEADERS = {'nome', 'name', 'nome_completo', 'cliente', 'first_name', 'primeiro_nome', 'full_name',
+                'responsavel', 'contato', 'nome_contato', 'nome_do_contato'}
 
 def header_key(value):
     # "Número de WhatsApp" -> "numero_de_whatsapp"
@@ -67,6 +138,8 @@ def pretty_phone(value):
     digits = re.sub(r'\D', '', str(value))
     if digits.startswith('55') and len(digits) in (12, 13):
         local = digits[4:]
+        if len(local) == 8 and local[0] in '6789':  # WA ID: celular sem o nono dígito.
+            local = '9' + local
         return f'+55 ({digits[2:4]}) {local[:-4]}-{local[-4:]}'
     return '+' + digits if digits else ''
 
@@ -206,16 +279,17 @@ def create_apps(db_path=None, settings=None):
     def health():
         return {'ok': True}, 200
 
-    def classify(choice):
+    def classify(choice, body='', rules=None):
+        # Regra cadastrada para o botão vence; senão, reconhece respostas curtas óbvias.
         val = normalized(choice)
-        rules = get_rules()
+        rules = rules or get_rules()
         yes = {normalized(v) for v in rules.get('aceite', [])}
         no = {normalized(v) for v in rules.get('recusa', [])}
         if val and val in yes and val not in no:
             return 'aceitou'
         if val and val in no and val not in yes:
             return 'recusou'
-        return 'revisar'
+        return reply_intent(body) or reply_intent(choice) or 'revisar'
 
     def get_rules():
         rules = {k: settings.get(k, []) for k in ('aceite','recusa')}
@@ -227,10 +301,39 @@ def create_apps(db_path=None, settings=None):
 
     def link_by_context(db):
         db.execute('''INSERT INTO outbounds SELECT outbound,id FROM contacts WHERE outbound IS NOT NULL ON CONFLICT DO NOTHING''')
-        db.execute('''UPDATE events SET contact_id=(SELECT contact_id FROM outbounds WHERE id=events.context),
-          association='ID da mensagem enviada' WHERE contact_id IS NULL AND context IS NOT NULL
-          AND EXISTS(SELECT 1 FROM outbounds o JOIN contacts ON contacts.id=o.contact_id WHERE o.id=events.context
-          AND (events.kind='status' OR contacts.phone=events.phone))''')
+        outs = {r['id']: r for r in db.execute('''SELECT o.id, o.contact_id, c.phone FROM outbounds o
+            JOIN contacts c ON c.id=o.contact_id''').fetchall()}
+        loose = db.execute('''SELECT id,kind,phone,ts,context FROM events WHERE contact_id IS NULL
+            AND COALESCE(association,'')<>? ORDER BY ts''',(DISCARDED,)).fetchall()
+        if not loose:
+            return
+        # Horário de cada envio conhecido, para ligar respostas escritas direto na conversa.
+        sent_at = {}
+        for r in db.execute("SELECT context, MIN(ts) AS ts FROM events WHERE kind='status' AND context IS NOT NULL GROUP BY context").fetchall():
+            if r['context'] in outs:
+                sent_at[r['context']] = r['ts']
+        by_phone = {}
+        for context, ts in sent_at.items():
+            by_phone.setdefault(phone_key(outs[context]['phone']), []).append((ts, outs[context]['contact_id']))
+        for ev in loose:
+            out = outs.get(ev['context'])
+            if out and (ev['kind']=='status' or phone_key(out['phone'])==phone_key(ev['phone'])):
+                db.execute('UPDATE events SET contact_id=?,association=? WHERE id=?',(out['contact_id'],'ID da mensagem enviada',ev['id']))
+            elif ev['kind']=='reply':
+                # Sem "responder" na mensagem: vale o envio mais recente para esse número antes da resposta.
+                earlier = [s for s in by_phone.get(phone_key(ev['phone']), []) if s[0] <= ev['ts']]
+                if earlier:
+                    db.execute('UPDATE events SET contact_id=?,association=? WHERE id=?',(max(earlier)[1],'Envio mais recente para o número',ev['id']))
+
+    def reclassify(db, rules=None):
+        # Aplica regras novas e o reconhecimento automático às respostas ainda sem classificação.
+        # Quem acabou de gravar regras nesta transação passa as regras (outra conexão ainda não as vê).
+        rules = rules or get_rules()
+        for ev in db.execute("""SELECT id,choice,body FROM events WHERE kind='reply' AND result='revisar'
+                AND COALESCE(association,'') NOT IN (?,?)""",(MANUAL,DISCARDED)).fetchall():
+            result = classify(ev['choice'], ev['body'], rules)
+            if result != 'revisar':
+                db.execute('UPDATE events SET result=? WHERE id=?',(result,ev['id']))
 
     def attach(db, contact_id, context):
         db.execute('INSERT INTO outbounds VALUES(?,?) ON CONFLICT DO NOTHING',(context,contact_id))
@@ -314,7 +417,7 @@ def create_apps(db_path=None, settings=None):
                             choice = button.get('id') or body
                         else:
                             body = '[Mensagem de tipo: '+kind+']'
-                        result = classify(choice) if choice else 'revisar'
+                        result = classify(choice, body) if kind in ('text','button','interactive') else 'revisar'
                         context = msg.get('context', {}).get('id')
                         records.append((number+':message:'+msg['id'], 'reply', phone(msg['from']), number,
                             int(msg['timestamp']), context, str(body), str(choice), result, json.dumps(msg, ensure_ascii=False)))
@@ -356,6 +459,8 @@ def create_apps(db_path=None, settings=None):
             row['last_ts'] = max((e['ts'] for e in evs), default=0)
             row['phone_fmt'] = pretty_phone(row['phone'])
             row['name_fmt'] = '' if row['name']==row['phone'] else row['name']
+            failed = [e for e in evs if e['kind']=='status' and e['body']=='failed']
+            row['fail_reason'] = fail_reason(failed[-1]['raw']) if failed and row['status']=='failed' else ''
             row['result'] = replies[-1]['result'] if replies else 'pendente'
             row['answer'] = replies[-1]['body'] if replies else ''
             row['choice'] = replies[-1]['choice'] if replies else ''
@@ -365,6 +470,8 @@ def create_apps(db_path=None, settings=None):
         totals = {k: sum(r['result']==k for r in rows) for k in LABELS}
         totals.update(total=len(rows), delivered=sum(r['delivery'] in ('Entregue','Lida') for r in rows), read=sum(r['delivery']=='Lida' for r in rows),
             sent=sum(r['status']!='none' for r in rows), failed=sum(r['status']=='failed' for r in rows), replied=sum(r['replied'] for r in rows))
+        totals['reasons'] = sorted(((n, reason) for reason, n in
+            {r['fail_reason']: sum(x['fail_reason']==r['fail_reason'] for x in rows) for r in rows if r['fail_reason']}.items()), reverse=True)
         return rows, totals
 
     @panel.get('/')
@@ -374,9 +481,14 @@ def create_apps(db_path=None, settings=None):
         with connect() as db:
             active = db.execute('SELECT * FROM campaign_windows WHERE ended IS NULL').fetchone()
             campaigns = [r['campaign'] for r in db.execute('SELECT campaign FROM contacts UNION SELECT campaign FROM campaign_windows ORDER BY campaign')]
-            loose = db.execute("""SELECT context,phone,ts,body FROM events WHERE kind='status'
-                AND contact_id IS NULL AND context IS NOT NULL ORDER BY ts""").fetchall()
-            inbox = db.execute("SELECT * FROM events WHERE kind='reply' AND (contact_id IS NULL OR result='revisar') ORDER BY ts DESC LIMIT 200").fetchall()
+            loose = db.execute("""SELECT context,phone,ts,body,raw FROM events WHERE kind='status'
+                AND contact_id IS NULL AND context IS NOT NULL AND COALESCE(association,'')<>? ORDER BY ts""",(DISCARDED,)).fetchall()
+            # Respostas ligadas a um contato que o reconhecimento automático não entendeu.
+            inbox = db.execute("""SELECT e.*, c.campaign, c.name FROM events e JOIN contacts c ON c.id=e.contact_id
+                WHERE e.kind='reply' AND e.result='revisar' ORDER BY e.ts DESC LIMIT 200""").fetchall()
+            # Mensagens de quem não recebeu nenhum disparo registrado.
+            outside = db.execute("""SELECT * FROM events WHERE kind='reply' AND contact_id IS NULL
+                AND COALESCE(association,'')<>? ORDER BY ts DESC LIMIT 200""",(DISCARDED,)).fetchall()
             last = db.execute('SELECT MAX(ts) AS last_ts FROM events').fetchone()['last_ts']
         # Abre na campanha com atividade mais recente; "Todas" é uma escolha explícita (vazia).
         recent = max(all_rows, key=lambda r: r['last_ts'], default=None)
@@ -384,20 +496,27 @@ def create_apps(db_path=None, settings=None):
         campaign = request.args.get('campanha', default)
         rows, totals = report(campaign)
         rows.sort(key=lambda r: r['last_ts'], reverse=True)  # Atividade mais recente primeiro.
-        # Envios sem campanha, um por mensagem, com o status mais avançado.
+        # Envios sem campanha agrupados por número, com o status mais avançado do último envio.
         order = {'sent': 1, 'delivered': 2, 'read': 3, 'failed': 4}
         sends = {}
         for ev in loose:
-            s = sends.setdefault(ev['context'], {'context': ev['context'], 'phone': ev['phone'], 'first': ev['ts'], 'status': ev['body']})
+            s = sends.setdefault(ev['context'], {'context': ev['context'], 'phone': ev['phone'], 'first': ev['ts'], 'status': ev['body'], 'raw': ev['raw']})
             if order.get(ev['body'], 0) > order.get(s['status'], 0):
-                s['status'] = ev['body']
-        unlinked_sends = sorted(sends.values(), key=lambda s: s['first'], reverse=True)[:500]
+                s['status'], s['raw'] = ev['body'], ev['raw']
+        groups = {}
+        for s in sorted(sends.values(), key=lambda s: s['first']):
+            g = groups.setdefault(phone_key(s['phone']), {'phone': s['phone'], 'contexts': [], 'first': s['first']})
+            g['contexts'].append(s['context'])
+            g.update(last=s['first'], status=s['status'], reason=fail_reason(s['raw']) if s['status']=='failed' else '')
+        unlinked_sends = sorted(groups.values(), key=lambda g: g['last'], reverse=True)[:500]
+        rules = get_rules()
+        show_results = bool(totals['aceitou'] or totals['recusou'] or rules.get('aceite') or rules.get('recusa'))
         return render_template('index.html', rows=rows, totals=totals, campaigns=campaigns,
-            campaign=campaign, inbox=inbox, labels=LABELS, date_text=date_text,
+            campaign=campaign, inbox=inbox, outside=outside, labels=LABELS, date_text=date_text,
             configured=bool(settings.get('webhook_secret') and settings.get('phone_number_id')),
-            last=date_text(last), all_contacts=all_rows, rules=get_rules(), active=active,
+            last=date_text(last), rules=rules, active=active, show_results=show_results,
             unlinked=len(sends), unlinked_sends=unlinked_sends, hosted=bool(os.environ.get('PANEL_PASSWORD')),
-            tab=tab, pretty_phone=pretty_phone, phone_key=phone_key)
+            tab=tab, pretty_phone=pretty_phone)
 
     @panel.post('/campanha')
     def campaign_control():
@@ -430,7 +549,8 @@ def create_apps(db_path=None, settings=None):
             for k,v in rules.items():
                 db.execute('''INSERT INTO preferences(key,value) VALUES(?,?)
                   ON CONFLICT(key) DO UPDATE SET value=excluded.value''',(k,json.dumps(v)))
-        flash('Regras salvas para as próximas respostas. Respostas anteriores permanecem disponíveis para revisão.')
+            reclassify(db, rules)
+        flash('Regras salvas. Respostas ainda sem classificação foram atualizadas.')
         return redirect(url_for('index', aba='config'))
 
     @panel.post('/importar')
@@ -465,7 +585,7 @@ def create_apps(db_path=None, settings=None):
                     phone_col = scores.index(max(scores))
             if phone_col is None:
                 raise ValueError('Não encontrei a coluna de telefone. Use um cabeçalho como "telefone".')
-            name_col = next((i for i,k in enumerate(keys) if has_header and (k in NAME_HEADERS or k.startswith('nome'))), None)
+            name_col = next((i for i,k in enumerate(keys) if has_header and i != phone_col and (k in NAME_HEADERS or k.startswith('nome'))), None)
             if name_col is None and not has_header:
                 name_col = next((i for i in range(width) if i != phone_col and
                     sum(bool(col(r,i)) and not looks_phone(col(r,i)) for r in body) * 2 >= len(body)), None)
@@ -503,6 +623,7 @@ def create_apps(db_path=None, settings=None):
                       outbound=COALESCE(contacts.outbound,excluded.outbound)''',(campaign,name,number,outbound))
                 capture_sends(db)
                 link_by_context(db)
+                reclassify(db)
                 names = sorted({p[0] for p in parsed})
                 linked = sum(db.execute('SELECT COUNT(*) AS n FROM contacts WHERE campaign=? AND outbound IS NOT NULL',(c,)).fetchone()['n'] for c in names)
             msg = f'{len(parsed)} contato(s) importado(s) em “{", ".join(names)}”.'
@@ -518,10 +639,18 @@ def create_apps(db_path=None, settings=None):
 
     @panel.post('/mover')
     def move_unlinked():
-        campaign = request.form.get('campanha','').strip()
-        contexts = request.form.getlist('envio')
+        # Cada caixa marcada pode representar vários envios do mesmo número.
+        contexts = [c for v in request.form.getlist('envio') for c in v.split()]
+        if request.form.get('acao') == 'descartar':
+            with connect() as db:
+                for context in contexts:
+                    db.execute("UPDATE events SET association=? WHERE kind='status' AND context=? AND contact_id IS NULL",(DISCARDED,context))
+                db.execute('INSERT INTO audit(ts,action) VALUES(?,?)',(int(time.time()),json.dumps({'action':'descartar','envios':contexts})))
+            flash(f'{len(contexts)} envio(s) descartado(s). Eles continuam no Excel de todas as campanhas.')
+            return redirect(url_for('index', aba='config'))
+        campaign = (request.form.get('nova','').strip() or request.form.get('campanha','').strip())
         if not 1 <= len(campaign) <= 150 or not contexts:
-            flash('Escolha a campanha e pelo menos um envio.')
+            flash('Marque pelo menos um envio e escolha a campanha.')
             return redirect(url_for('index', aba='config'))
         moved = 0
         with connect() as db:
@@ -539,6 +668,7 @@ def create_apps(db_path=None, settings=None):
                 attach(db, contact_id, context)
                 moved += 1
             link_by_context(db)
+            reclassify(db)
             db.execute('INSERT INTO audit(ts,action) VALUES(?,?)',(int(time.time()),json.dumps({'action':'mover','campaign':campaign,'envios':contexts})))
         flash(f'{moved} envio(s) movido(s) para “{campaign}”.')
         return redirect(url_for('index', campanha=campaign))
@@ -547,16 +677,37 @@ def create_apps(db_path=None, settings=None):
     def review():
         event_id = request.form.get('evento','')
         result = request.form.get('resultado','')
-        if result not in ('aceitou','recusou','revisar'):
+        if result not in ('aceitou','recusou','revisar','outra','descartar'):
             abort(400)
         with connect() as db:
             ev = db.execute("SELECT * FROM events WHERE id=? AND kind='reply'",(event_id,)).fetchone()
-            contact = db.execute('SELECT * FROM contacts WHERE id=?',(request.form.get('contato'),)).fetchone()
-            if not ev or not contact or ev['phone'] != contact['phone']:
+            if not ev:
                 abort(400)
-            db.execute('UPDATE events SET contact_id=?,result=?,association=? WHERE id=?', (contact['id'], result, 'Revisão manual local', event_id))
+            if result == 'descartar':
+                db.execute('UPDATE events SET association=? WHERE id=? AND contact_id IS NULL',(DISCARDED,event_id))
+                db.execute('INSERT INTO audit(ts,event_id,action) VALUES(?,?,?)',(int(time.time()),event_id,json.dumps({'action':'descartar'})))
+                flash('Mensagem descartada.')
+                return redirect(url_for('index', aba='config'))
+            # Sem contato informado, mantém o contato já ligado automaticamente.
+            contact = db.execute('SELECT * FROM contacts WHERE id=?',(request.form.get('contato') or ev['contact_id'],)).fetchone()
+            if not contact or phone_key(ev['phone']) != phone_key(contact['phone']):
+                abort(400)
+            db.execute('UPDATE events SET contact_id=?,result=?,association=? WHERE id=?', (contact['id'], result, MANUAL, event_id))
             db.execute('INSERT INTO audit(ts,event_id,action) VALUES(?,?,?)',(int(time.time()),event_id,json.dumps({'before_contact':ev['contact_id'],'before_result':ev['result'],'contact':contact['id'],'result':result})))
-        flash('Revisão salva. A resposta original foi preservada.')
+            # "Sempre contar este botão assim": vira regra e vale para as outras respostas iguais.
+            if request.form.get('sempre') and ev['choice'] and result in ('aceitou','recusou'):
+                rules = get_rules()
+                key, other = ('aceite','recusa') if result=='aceitou' else ('recusa','aceite')
+                rules[other] = [v for v in rules.get(other, []) if normalized(v) != normalized(ev['choice'])]
+                if normalized(ev['choice']) not in {normalized(v) for v in rules.get(key, [])}:
+                    rules[key] = rules.get(key, []) + [ev['choice']]
+                for k in ('aceite','recusa'):
+                    db.execute('''INSERT INTO preferences(key,value) VALUES(?,?)
+                      ON CONFLICT(key) DO UPDATE SET value=excluded.value''',(k,json.dumps(rules[k])))
+                reclassify(db, rules)
+                flash(f'Pronto. O botão “{ev["body"] or ev["choice"]}” agora sempre conta como {LABELS[result]}.')
+            else:
+                flash(f'Resposta marcada como {LABELS[result]}.')
         return redirect(url_for('index', aba='config'))
 
     @panel.get('/modelo.csv')
@@ -579,12 +730,12 @@ def create_apps(db_path=None, settings=None):
         summary.append(['Base importada não comprova envio. Sem status significa não informado.'])
         summary.append(['Respostas sem vínculo não entram nos resultados por campanha.'])
         summary.append(['Resultado considera a resposta vinculada mais recente, inclusive revisão.'])
-        for r in range(5,12):
+        for r in range(5,8+len(LABELS)):
             summary.cell(r,3).number_format = '0.0%'
         detail = wb.create_sheet('Contatos')
-        detail.append(['Campanha','Nome','Telefone','ID do envio','Entrega','Resultado','Resposta original','Opção (ID)','Data da resposta','Vínculo'])
+        detail.append(['Campanha','Nome','Telefone','ID do envio','Entrega','Resultado','Resposta original','Opção (ID)','Data da resposta','Vínculo','Motivo da falha'])
         for row in rows:
-            append(detail,[row['campaign'],row['name'],row['phone'],row['outbound'],row['delivery'],LABELS[row['result']],row['answer'],row['choice'],row['when'],row['association']])
+            append(detail,[row['campaign'],row['name'],row['phone'],row['outbound'],row['delivery'],LABELS[row['result']],row['answer'],row['choice'],row['when'],row['association'],row['fail_reason']])
         history = wb.create_sheet('Histórico')
         history.append(['Campanha','Telefone','Tipo','Data','Conteúdo','Opção','Resultado','Vínculo','ID do evento'])
         with connect() as db:
@@ -633,10 +784,11 @@ def create_apps(db_path=None, settings=None):
             dest.close()
         return send_file(io.BytesIO(content), as_attachment=True, download_name='backup-datafy.sqlite3', mimetype='application/octet-stream')
 
-    # Links events stored before a capture rule changed (e.g. failed sends).
+    # Liga e classifica eventos gravados antes de uma mudança nas regras de captura.
     with connect() as db:
         capture_sends(db)
         link_by_context(db)
+        reclassify(db)
 
     return panel, webhook
 

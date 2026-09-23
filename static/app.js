@@ -9,6 +9,7 @@
     rows.forEach(function (tr) {
       var st = tr.dataset.status, replied = tr.dataset.replied === '1';
       var ok = filter === 'all' ||
+        (filter.indexOf('r:') === 0 && tr.dataset.result === filter.slice(2)) ||
         (filter === 'replied' && replied) ||
         (filter === 'pending' && (st === 'sent' || st === 'none')) ||
         (filter === 'delivered' && (st === 'delivered' || st === 'read')) ||

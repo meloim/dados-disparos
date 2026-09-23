@@ -19,6 +19,7 @@
   {%- endif -%}
 {%- endmacro %}
 {% macro pct(n, d) %}{{ '%.0f'|format(n*100/d if d else 0) }}%{% endmacro %}
+{% set status_label = {'sent':'Enviada','delivered':'Entregue','read':'Lida','failed':'Falhou','none':'Não informado'} %}
 
 <header class="top">
   <div class="top-inner">
@@ -31,7 +32,8 @@
   </div>
   <nav class="tabs">
     <a href="{{ url_for('index', campanha=campaign) }}" class="{{ 'on' if tab=='painel' }}">Acompanhamento</a>
-    <a href="{{ url_for('index', aba='config') }}" class="{{ 'on' if tab=='config' }}">Configurações{% if inbox %} <span class="count" title="Respostas para revisar">{{ inbox|length }}</span>{% endif %}</a>
+    {% set pending = inbox|length + unlinked_sends|length + outside|length %}
+    <a href="{{ url_for('index', aba='config') }}" class="{{ 'on' if tab=='config' }}">Configurações{% if pending %} <span class="count" title="Itens pedindo atenção">{{ pending }}</span>{% endif %}</a>
   </nav>
 </header>
 
@@ -50,18 +52,16 @@
     <noscript><button>Ver</button></noscript>
   </form>
   <span class="live"><i></i>Recebendo eventos</span>
-  {% if unlinked %}<a class="idle" href="{{ url_for('index', aba='config') }}#sem-campanha">{{ unlinked }} envio(s) sem campanha</a>{% endif %}
-  <a class="btn ghost" href="{{ url_for('index', aba='config') }}">+ Nova campanha</a>
   <span class="spacer"></span>
   <span class="updated" id="updated">Atualizado agora</span>
+  <a class="btn ghost" href="{{ url_for('index', aba='config') }}">+ Nova campanha</a>
   <a class="btn ghost" href="{{url_for('export',campanha=campaign)}}">
-    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>Baixar Excel
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>Excel
   </a>
 </div>
 
 <div id="live">
 {% set base = totals.sent %}
-{% set show_results = rules.get('aceite') or rules.get('recusa') or totals.aceitou or totals.recusou %}
 <div class="funnel">
   <button type="button" class="stat" data-filter="all">
     <span class="label">{{ tick('sent') }} Enviados</span>
@@ -87,6 +87,14 @@
     <span class="pct">{{ pct(totals.replied, base) }} dos enviados</span>
     <div class="meter"><span style="width:{{ pct(totals.replied, base) }}"></span></div>
   </button>
+  {% if show_results %}
+  <button type="button" class="stat accepted" data-filter="r:aceitou">
+    <span class="label s-accepted"><svg class="tick" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 11v9H4v-9zm0 0l4-8a2 2 0 012 2v4h5.5a2 2 0 012 2.3l-1.2 7A2 2 0 0117.3 20H7"/></svg> Aceitaram</span>
+    <strong>{{ totals.aceitou }}</strong>
+    <span class="pct">{{ pct(totals.aceitou, base) }} dos enviados</span>
+    <div class="meter"><span style="width:{{ pct(totals.aceitou, base) }}"></span></div>
+  </button>
+  {% endif %}
   <button type="button" class="stat failed" data-filter="failed">
     <span class="label s-failed">{{ tick('failed') }} Falharam</span>
     <strong>{{ totals.failed }}</strong>
@@ -95,12 +103,10 @@
   </button>
 </div>
 
-{% if show_results %}
-<div class="outcomes">
-  Classificação das respostas:
-  <span class="badge aceitou">{{ labels.aceitou }} · {{ totals.aceitou }}</span>
-  <span class="badge recusou">{{ labels.recusou }} · {{ totals.recusou }}</span>
-  <span class="badge revisar">{{ labels.revisar }} · {{ totals.revisar }}</span>
+{% if totals.reasons %}
+<div class="reasons">
+  <b>Por que falharam:</b>
+  {% for n, reason in totals.reasons %}<span>{{ reason }} <em>{{ n }}</em></span>{% endfor %}
 </div>
 {% endif %}
 
@@ -112,6 +118,10 @@
     <button type="button" class="chip" data-filter="delivered">Entregues <b>{{ totals.delivered }}</b></button>
     <button type="button" class="chip" data-filter="read">Lidas <b>{{ totals.read }}</b></button>
     <button type="button" class="chip" data-filter="replied">Responderam <b>{{ totals.replied }}</b></button>
+    {% if show_results %}
+    <button type="button" class="chip" data-filter="r:aceitou">Aceitaram <b>{{ totals.aceitou }}</b></button>
+    <button type="button" class="chip" data-filter="r:recusou">Recusaram <b>{{ totals.recusou }}</b></button>
+    {% endif %}
     <button type="button" class="chip" data-filter="failed">Falharam <b>{{ totals.failed }}</b></button>
     <input id="search" class="search" type="search" placeholder="Buscar nome ou telefone" aria-label="Buscar contato">
   </div>
@@ -124,12 +134,13 @@
     </tr></thead>
     <tbody>
     {% for r in rows %}
-      <tr data-status="{{ r.status }}" data-replied="{{ 1 if r.replied else 0 }}" data-search="{{ (r.name_fmt ~ r.phone)|lower|replace(' ','') }}">
+      <tr data-status="{{ r.status }}" data-replied="{{ 1 if r.replied else 0 }}" data-result="{{ r.result }}" data-search="{{ (r.name_fmt ~ r.phone)|lower|replace(' ','') }}">
         <td><div class="who">
           <span class="avatar">{% if r.name_fmt %}{{ r.name_fmt[:1]|upper }}{% else %}<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12a4.5 4.5 0 10-4.5-4.5A4.5 4.5 0 0012 12zm0 2c-4 0-8 2-8 5v1h16v-1c0-3-4-5-8-5z"/></svg>{% endif %}</span>
           <div>{% if r.name_fmt %}<b>{{ r.name_fmt }}</b><small>{{ r.phone_fmt }}</small>{% else %}<b>{{ r.phone_fmt }}</b>{% endif %}</div>
         </div></td>
-        <td><span class="state s-{{ r.status }}">{{ tick(r.status) }}<span>{{ r.delivery }}{% if r.status_when %}<small>{{ r.status_when[:16] }}</small>{% endif %}</span></span></td>
+        <td><span class="state s-{{ r.status }}">{{ tick(r.status) }}<span>{{ r.delivery }}{% if r.status_when %}<small>{{ r.status_when[:16] }}</small>{% endif %}</span></span>
+          {% if r.fail_reason %}<div class="reason">{{ r.fail_reason }}</div>{% endif %}</td>
         <td>{% if r.replied %}<span class="bubble">{{ r.answer or '—' }}<small>{{ r.when[:16] }}</small></span>{% else %}<span class="muted">—</span>{% endif %}</td>
         {% if show_results %}<td>{% if r.replied %}<span class="badge {{ r.result }}">{{ labels[r.result] }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}
         {% if not campaign %}<td class="hide-sm"><small>{{ r.campaign }}</small></td>{% endif %}
@@ -152,18 +163,18 @@
 
 {% else %}
 {# ───────────── CONFIGURAÇÕES ───────────── #}
+<datalist id="campaign-names">{% for c in campaigns %}<option value="{{c}}">{% endfor %}</datalist>
 <div class="config-stack">
 <div class="grid2">
   <section class="card">
     <h2>Nova campanha</h2>
-    <p class="muted">Suba o <b>mesmo CSV</b> que você usou na Datafy, do jeito que ele está. O painel acha sozinho as colunas de telefone e nome. Os envios para esses números entram nesta campanha, antes ou depois do disparo, e várias campanhas podem rodar ao mesmo tempo.</p>
+    <p class="muted">Suba o <b>mesmo CSV</b> que você usou na Datafy, do jeito que ele está (telefone e, se tiver, nome). Os envios para esses números entram nesta campanha, antes ou depois do disparo. Várias campanhas podem rodar ao mesmo tempo.</p>
     <form action="/importar" method="post" enctype="multipart/form-data" class="config-stack" style="gap:10px">
       <input type="hidden" name="csrf" value="{{session.csrf}}">
-      <input name="campanha" list="campaign-names" placeholder="Nome da campanha (ex.: Teste webhook 2.0)" maxlength="150" required aria-label="Nome da campanha">
+      <input name="campanha" list="campaign-names" placeholder="Nome da campanha (ex.: Convite evento outubro)" maxlength="150" required aria-label="Nome da campanha">
       <input aria-label="Arquivo CSV" type="file" name="arquivo" accept=".csv,text/csv" required>
       <div class="row"><button>Importar lista</button><span class="help" style="margin:0">Usar um nome que já existe acrescenta contatos a ela.</span></div>
     </form>
-    <datalist id="campaign-names">{% for c in campaigns %}<option value="{{c}}">{% endfor %}</datalist>
     {% if active %}
       <div class="status-box on" style="margin-top:16px"><b>Captura por horário ligada: {{active.campaign}}</b>Modo antigo: envios para números fora das listas entram nesta campanha desde {{date_text(active.started)}}. Com várias campanhas ao mesmo tempo, é melhor encerrar.
         <form action="/campanha" method="post" style="margin-top:10px"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="acao" value="encerrar"><button class="danger">Encerrar captura por horário</button></form>
@@ -172,7 +183,7 @@
   </section>
 
   <section class="card">
-    <h2>Dados e manutenção</h2>
+    <h2>Dados</h2>
     <div class="row" style="margin:12px 0">
       <a class="btn ghost" href="{{url_for('export')}}">Excel de todas as campanhas</a>
       <a class="btn ghost" href="/backup">Salvar backup</a>
@@ -181,54 +192,81 @@
   </section>
 </div>
 
+{# Respostas que o painel não soube classificar sozinho #}
+{% if show_results or inbox %}
+<section class="card">
+  <h2>Respostas para classificar {% if inbox %}<span class="count">{{ inbox|length }}</span>{% endif %}</h2>
+  {% if inbox %}
+  <p class="muted">“Sim”, “Não”, “Confirmar” e parecidos já são reconhecidos sozinhos. Aqui ficam só as respostas que precisam de uma pessoa para ler.</p>
+  {% for e in inbox %}
+  <div class="reply">
+    <div class="reply-head"><b>{{ e.name if e.name != e.phone else pretty_phone(e.phone) }}</b>
+      <small>{% if e.name != e.phone %}{{ pretty_phone(e.phone) }} · {% endif %}{{ e.campaign }} · {{ date_text(e.ts)[:16] }}</small></div>
+    <span class="bubble">{{ e.body }}</span>
+    <form action="/revisar" method="post" class="row">
+      <input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="evento" value="{{e.id}}">
+      <button name="resultado" value="aceitou" class="ok">👍 Aceitou</button>
+      <button name="resultado" value="recusou" class="danger">👎 Recusou</button>
+      <button name="resultado" value="outra" class="btn ghost">Outra resposta</button>
+      {% if e.choice %}<label class="help" style="margin:0"><input type="checkbox" name="sempre" value="1"> Sempre contar o botão “{{ e.body or e.choice }}” assim</label>{% endif %}
+    </form>
+  </div>
+  {% endfor %}
+  {% else %}<p>Tudo classificado. 🎉</p>{% endif %}
+</section>
+{% endif %}
+
 <section class="card" id="sem-campanha">
-  <h2>Envios sem campanha {% if unlinked %}<span class="count">{{ unlinked }}</span>{% endif %}</h2>
+  <h2>Envios sem campanha {% if unlinked_sends %}<span class="count">{{ unlinked_sends|length }}</span>{% endif %}</h2>
   {% if unlinked_sends %}
-  <p class="muted">Números que não estão em nenhuma lista importada. Importe a lista da campanha acima (eles são ligados na hora) ou selecione e mova manualmente.</p>
+  <p class="muted">Disparos para números que não estão em nenhuma lista importada. Normalmente são <b>testes</b> ou números que faltaram no CSV. Importe a lista da campanha acima, mova para uma campanha ou descarte.</p>
   <form action="/mover" method="post">
     <input type="hidden" name="csrf" value="{{session.csrf}}">
     <div class="row" style="margin-bottom:10px">
-      <input name="campanha" list="campaign-names" placeholder="Mover para a campanha…" maxlength="150" required aria-label="Campanha de destino" style="flex:1;min-width:220px">
-      <button>Mover selecionados</button>
+      <select name="campanha" aria-label="Campanha de destino">
+        <option value="">Mover para…</option>
+        {% for c in campaigns %}<option>{{ c }}</option>{% endfor %}
+      </select>
+      <input name="nova" placeholder="ou nova campanha" maxlength="150" aria-label="Nova campanha" style="width:180px">
+      <button name="acao" value="mover">Mover selecionados</button>
+      <button name="acao" value="descartar" class="btn ghost">Descartar selecionados</button>
     </div>
     <div class="scroll" style="max-height:420px;overflow-y:auto">
     <table>
-      <thead><tr><th><input type="checkbox" id="check-all" aria-label="Selecionar todos"></th><th>Telefone</th><th>Status</th><th>Disparo</th></tr></thead>
+      <thead><tr><th><input type="checkbox" id="check-all" aria-label="Selecionar todos"></th><th>Telefone</th><th>Status do último envio</th><th>Disparo</th></tr></thead>
       <tbody>
       {% for s in unlinked_sends %}
-        <tr><td><input type="checkbox" name="envio" value="{{ s.context }}" aria-label="Selecionar {{ s.phone }}"></td>
-          <td>{{ pretty_phone(s.phone) }}</td>
-          <td><span class="state s-{{ s.status }}">{{ tick(s.status) }}<span>{{ {'sent':'Enviada','delivered':'Entregue','read':'Lida','failed':'Falhou'}[s.status] }}</span></span></td>
-          <td><small>{{ date_text(s.first)[:16] }}</small></td></tr>
+        <tr><td><input type="checkbox" name="envio" value="{{ s.contexts|join(' ') }}" aria-label="Selecionar {{ pretty_phone(s.phone) }}"></td>
+          <td><b>{{ pretty_phone(s.phone) }}</b>{% if s.contexts|length > 1 %}<small> · {{ s.contexts|length }} envios</small>{% endif %}</td>
+          <td><span class="state s-{{ s.status }}">{{ tick(s.status) }}<span>{{ status_label[s.status] }}</span></span>{% if s.reason %}<div class="reason">{{ s.reason }}</div>{% endif %}</td>
+          <td><small>{{ date_text(s.last)[:16] }}</small></td></tr>
       {% endfor %}
       </tbody>
     </table>
     </div>
   </form>
-  {% else %}<p>Todos os envios recebidos estão ligados a uma campanha. 👌</p>{% endif %}
+  {% else %}<p>Todos os envios estão ligados a uma campanha. 👌</p>{% endif %}
 </section>
 
+{% if outside %}
 <section class="card">
-  <h2>Respostas para revisar {% if inbox %}<span class="count">{{ inbox|length }}</span>{% endif %}</h2>
-  <p class="muted">Respostas em texto livre, áudio ou botões sem regra. Classifique manualmente se precisar.</p>
-  {% for e in inbox %}
+  <h2>Mensagens fora de campanha <span class="count">{{ outside|length }}</span></h2>
+  <p class="muted">Pessoas que escreveram para o número sem ter recebido nenhum disparo registrado. Só para consulta. Descarte quando já tiver visto.</p>
+  {% for e in outside %}
   <div class="reply">
-    <b>{{ pretty_phone(e.phone) }}</b> <small>· {{date_text(e.ts)}}</small><br>
-    <span class="bubble">{{e.body}}</span>
-    {% if e.choice %}<p class="help">ID do botão: <code>{{e.choice}}</code></p>{% endif %}
-    <form action="/revisar" method="post" class="row"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="evento" value="{{e.id}}">
-      <select name="contato" aria-label="Campanha do contato" required><option value="">Campanha deste contato…</option>{% for c in all_contacts if phone_key(c.phone)==phone_key(e.phone) %}<option value="{{c.id}}" {% if e.contact_id==c.id %}selected{% endif %}>{{c.campaign}}{% if c.name != c.phone %} — {{c.name}}{% endif %}</option>{% endfor %}</select>
-      <select name="resultado" aria-label="Resultado"><option value="revisar">Manter em revisão</option><option value="aceitou">Aceitou</option><option value="recusou">Recusou</option></select>
-      <button>Salvar</button>
-    </form>
+    <div class="reply-head"><b>{{ pretty_phone(e.phone) }}</b> <small>{{ date_text(e.ts)[:16] }}</small></div>
+    <div class="row"><span class="bubble">{{ e.body }}</span>
+      <form action="/revisar" method="post"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="evento" value="{{e.id}}"><button name="resultado" value="descartar" class="btn ghost">Descartar</button></form>
+    </div>
   </div>
-  {% else %}<p>Nenhuma resposta aguardando revisão. 🎉</p>{% endfor %}
+  {% endfor %}
 </section>
+{% endif %}
 
 <section class="card">
   <details>
-    <summary>Classificação automática das respostas (Aceitou / Recusou)</summary>
-    <p class="muted">Só é útil em campanhas com botões do tipo “Sim, autorizo” / “Não”. Cole o <b>ID do botão</b> (aparece na fila de revisão acima), um por linha. Sem regras, as respostas aparecem só como “respondeu”.</p>
+    <summary>Regras de botões (avançado)</summary>
+    <p class="muted">O painel já entende respostas como “Sim”, “Quero”, “Confirmar”, “Não” e “Parar”. Use isto só para botões com outros textos. O jeito mais fácil é marcar “Sempre contar o botão assim” ao classificar uma resposta acima.</p>
     <form action="/regras" method="post"><input type="hidden" name="csrf" value="{{session.csrf}}">
       <div class="rules">
         <label>Botões que contam como “Aceitou”<textarea name="aceite" rows="4">{{rules.get('aceite',[])|join('\n')}}</textarea></label>

@@ -189,6 +189,49 @@ class Integration(unittest.TestCase):
         self.panel.post('/mover',data={'csrf':self.csrf,'campanha':'Manual','envio':['wamid.m']})
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM events WHERE contact_id IS NULL'),0)
         self.assertEqual(self.scalar('SELECT campaign FROM contacts'),'Manual')
+    def reply_from(self,mid,phone,ts,text=None,button=None):
+        m={'id':mid,'from':phone,'timestamp':str(ts)}
+        if button: m.update(type='button',button={'text':button[1],'payload':button[0]})
+        else: m.update(type='text',text={'body':text})
+        return m
+    def test_reply_without_context_links_by_phone_and_is_recognized(self):
+        now=int(time.time())
+        self.import_list('Convite','nome,telefone\nMaria,5581999522801\n')
+        self.send(statuses=[self.status_to('wamid.c','558199522801',now-60)])
+        # Escreve direto na conversa (sem "responder"), do WA ID sem o nono dígito.
+        self.send([self.reply_from('r1','558199522801',now,'Sim!')])
+        self.assertEqual(self.scalar("SELECT result FROM events WHERE kind='reply'"),'aceitou')
+        self.assertIsNotNone(self.scalar("SELECT contact_id FROM events WHERE kind='reply'"))
+        self.send([self.reply_from('r2','558199522801',now+1,'Não quero, obrigado')])
+        self.assertEqual(self.scalar("SELECT result FROM events WHERE id LIKE '%r2'"),'recusou')
+    def test_manual_review_accepts_phone_without_ninth_digit(self):
+        now=int(time.time())
+        self.import_list('Convite','telefone\n5581999522801\n')
+        self.send(statuses=[self.status_to('wamid.c','558199522801',now-60)])
+        self.send([self.reply_from('r1','558199522801',now,'Pode me explicar melhor como funciona?')])
+        eid=self.scalar("SELECT id FROM events WHERE kind='reply'")
+        self.assertEqual(self.scalar("SELECT result FROM events WHERE kind='reply'"),'revisar')
+        self.assertEqual(self.panel.post('/revisar',data={'csrf':self.csrf,'evento':eid,'resultado':'outra'}).status_code,302)
+        self.assertEqual(self.scalar("SELECT result FROM events WHERE kind='reply'"),'outra')
+    def test_always_rule_from_button_reclassifies_others(self):
+        now=int(time.time())
+        self.import_list('Cadastro','telefone\n5511911111111\n5511922222222\n')
+        self.send(statuses=[self.status_to('wamid.1','5511911111111',now-60),self.status_to('wamid.2','5511922222222',now-60)])
+        self.send([self.reply_from('b1','5511911111111',now,button=('CAD_OK','Participar')),
+                   self.reply_from('b2','5511922222222',now,button=('CAD_OK','Participar'))])
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM events WHERE result='revisar'"),2)
+        eid=self.scalar("SELECT id FROM events WHERE id LIKE '%b1'")
+        self.panel.post('/revisar',data={'csrf':self.csrf,'evento':eid,'resultado':'aceitou','sempre':'1'})
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM events WHERE result='aceitou'"),2)
+    def test_failure_reason_and_discard(self):
+        now=int(time.time())
+        self.import_list('Falhas','telefone\n5581999522801\n')
+        failed=self.status_to('wamid.f','558199522801',now,'failed');failed['errors']=[{'code':131026,'title':'Message undeliverable'}]
+        self.send(statuses=[failed,self.status_to('wamid.t','5511933333333',now)])
+        html=self.panel.get('/?campanha=Falhas').get_data(as_text=True)
+        self.assertIn('Número sem WhatsApp',html)
+        self.panel.post('/mover',data={'csrf':self.csrf,'acao':'descartar','envio':['wamid.t']})
+        self.assertNotIn('wamid.t',self.panel.get('/?aba=config').get_data(as_text=True))
     def test_rules_persist_and_reject_overlap(self):
         self.panel.post('/regras',data={'csrf':self.csrf,'aceite':'YES','recusa':'yes'})
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM preferences'),0)
