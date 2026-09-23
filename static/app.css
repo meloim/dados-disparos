@@ -10,7 +10,8 @@
   --danger-bg:#3a1d1f;--warn:#f0c14b;--warn-bg:#3a3018;--ok:#4ade80;--ok-bg:#16301f;--bubble:#005c4b;--wa-light:#005c4b;
 }}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font-size:15px;line-height:1.45}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+body{overflow-x:hidden;margin:0;background:var(--bg);color:var(--text);font-size:15px;line-height:1.45}
 a{color:var(--wa-teal)}
 small,.muted{color:var(--muted)}
 .muted{font-size:13px}
@@ -221,7 +222,7 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:10px 20px 30p
   .live,.idle{font-size:12px;padding:5px 10px}
 
   /* Funil em 2 colunas, compacto. */
-  .funnel{grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+  .funnel{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-bottom:12px}
   .stat{padding:12px;border-radius:12px}
   .stat .label{font-size:12px;gap:5px}
   .stat .label .tick{width:15px;height:15px}
@@ -230,10 +231,16 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:10px 20px 30p
   .meter{margin-top:6px;height:4px}
   .reasons{margin:-2px 0 12px;font-size:12px}
 
-  /* Busca na largura toda; filtros numa faixa que rola de lado. */
-  .filter-row{flex-direction:column-reverse;align-items:stretch;gap:10px}
+  /* Busca na largura toda; filtros numa faixa que rola de lado.
+     No Safari (iPhone) a faixa esticava até a soma dos botões e empurrava a página:
+     width/min-width/max-width a prendem à largura do cartão. */
+  .filter-row{flex-direction:column-reverse;align-items:stretch;gap:10px;min-width:0;max-width:100%}
   .search{width:100%;min-width:0;margin-left:0}
-  .filters{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:0 -14px;padding:0 14px 2px}
+  .filters{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:0 -14px;padding:0 14px 2px;
+    width:calc(100% + 28px);min-width:0;max-width:calc(100% + 28px)}
+  #contacts{overflow:hidden}
+  /* Safari dá zoom ao focar campos com texto menor que 16px. */
+  input,select,textarea{font-size:16px}
   .filters::-webkit-scrollbar{display:none}
   .chip{flex:none;padding:6px 12px}
 
@@ -241,7 +248,7 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:10px 20px 30p
   #contacts .scroll{overflow:visible}
   #contacts table,#contacts tbody{display:block}
   #contacts thead{display:none}
-  #contacts tbody tr{display:grid;grid-template-columns:1fr auto;gap:8px 10px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+  #contacts tbody tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 10px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
   #contacts tbody tr:last-child{border-bottom:0}
   #contacts td{display:block;padding:0;border:0}
   /* Linha 1: nome | status. Linha 2: resposta | resultado. */
