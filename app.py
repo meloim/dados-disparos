@@ -57,8 +57,8 @@ def create_apps(db_path=None, settings=None):
         cfg = ROOT / 'config.json'
         settings = json.loads(cfg.read_text(encoding='utf-8-sig')) if cfg.exists() else {}
     settings = dict(settings)
-    settings['webhook_secret'] = os.environ.get('DATAFY_WEBHOOK_SECRET', settings.get('webhook_secret', ''))
-    settings['phone_number_id'] = os.environ.get('DATAFY_PHONE_NUMBER_ID', settings.get('phone_number_id', ''))
+    settings['webhook_secret'] = os.environ.get('DATAFY_WEBHOOK_SECRET', settings.get('webhook_secret', '')).strip().strip('"\'')
+    settings['phone_number_id'] = str(os.environ.get('DATAFY_PHONE_NUMBER_ID', settings.get('phone_number_id', ''))).strip()
     database_url = os.environ.get('DATABASE_URL', '') if db_path is None else ''
     if database_url.startswith('postgres://'):
         database_url = 'postgresql://' + database_url[len('postgres://'):]
@@ -233,11 +233,15 @@ def create_apps(db_path=None, settings=None):
         sig = request.headers.get('x-datafy-signature-256', '')
         try:
             if abs(time.time() - int(stamp)) > 300:
+                print(f'[webhook 401] timestamp fora da janela: {stamp!r} (agora {int(time.time())})', flush=True)
                 abort(401)
         except ValueError:
+            print(f'[webhook 401] timestamp ausente/inválido: {stamp!r}', flush=True)
             abort(401)
         expected = 'sha256=' + hmac.new(secret.encode(), stamp.encode()+b'.'+raw, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected.encode(), sig.encode()):
+            print(f'[webhook 401] assinatura não confere: recebida={sig[:16]!r}... '
+                  f'secret_prefixo={secret[:9]!r} secret_len={len(secret)} corpo={len(raw)} bytes', flush=True)
             abort(401)
         try:
             payload = json.loads(raw)
