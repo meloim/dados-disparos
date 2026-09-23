@@ -1,9 +1,10 @@
-<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar · Disparos WhatsApp</title>
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar · Disparos Construir</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
-<style>body{min-height:100vh;display:grid;place-items:center;background:linear-gradient(var(--wa-dark) 0 200px,var(--bg) 200px)}.box{width:min(400px,92vw)}.box h1{font-size:20px;margin:14px 0 4px}label{display:block;margin:14px 0 6px;font-size:13px;font-weight:600}input{width:100%}button{width:100%;justify-content:center;margin-top:20px;padding:12px}</style></head>
-<body><main class="box card">
-<span class="brand-icon"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M12 2a10 10 0 00-8.6 15.1L2 22l5-1.3A10 10 0 1012 2z"/></svg></span>
-<h1>Disparos WhatsApp</h1><p class="muted">Entre para acompanhar as campanhas.</p>
+<style>body{min-height:100vh;display:grid;place-items:center;align-content:center;gap:22px;background:linear-gradient(var(--wa-dark) 0 260px,var(--bg) 260px)}.login-logo{height:48px;width:auto}.box{width:min(400px,92vw)}.box h1{font-size:20px;margin:0 0 4px}label{display:block;margin:14px 0 6px;font-size:13px;font-weight:600}input{width:100%}button{width:100%;justify-content:center;margin-top:20px;padding:12px}</style></head>
+<body>
+<img class="login-logo" src="{{ url_for('static', filename='logo-construir.svg') }}" alt="Editora Construir" width="180" height="48">
+<main class="box card">
+<h1>Disparos Construir</h1><p class="muted">Entre para acompanhar as campanhas.</p>
 {% for message in get_flashed_messages() %}<div class="flash">{{message}}</div>{% endfor %}
 <form method="post"><input type="hidden" name="csrf" value="{{session.csrf}}"><label>Usuário</label><input name="username" autocomplete="username" required><label>Senha</label><input type="password" name="password" autocomplete="current-password" required><button>Entrar</button></form>
 </main></body></html>

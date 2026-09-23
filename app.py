@@ -572,7 +572,7 @@ def create_apps(db_path=None, settings=None):
         wb = Workbook()
         summary = wb.active
         summary.title = 'Resumo'
-        for row in [['Relatório de autorização — WhatsApp'],['Campanha',campaign or 'Todas'],['Gerado em', date_text(time.time())],['Indicador','Quantidade','Percentual da base'],['Contatos na base',totals['total'],1 if totals['total'] else 0],['Entregues (inclui lidas)',totals['delivered'],totals['delivered']/totals['total'] if totals['total'] else 0],['Leituras informadas',totals['read'],totals['read']/totals['total'] if totals['total'] else 0]]:
+        for row in [['Disparos Construir — Relatório de campanha'],['Campanha',campaign or 'Todas'],['Gerado em', date_text(time.time())],['Indicador','Quantidade','Percentual da base'],['Contatos na base',totals['total'],1 if totals['total'] else 0],['Entregues (inclui lidas)',totals['delivered'],totals['delivered']/totals['total'] if totals['total'] else 0],['Leituras informadas',totals['read'],totals['read']/totals['total'] if totals['total'] else 0]]:
             summary.append(row)
         for k,label in LABELS.items():
             summary.append([label,totals[k],totals[k]/totals['total'] if totals['total'] else 0])
