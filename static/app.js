@@ -54,6 +54,60 @@
 
   bind();
 
+  // Balão com o motivo da falha. Fica no <body> para não ser cortado pela rolagem da tabela,
+  // e usa delegação para continuar funcionando depois da atualização automática.
+  var tipbox = null, tipFor = null;
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text) n.textContent = text;
+    return n;
+  }
+  function showTip(target) {
+    if (tipFor === target) return;
+    hideTip();
+    tipFor = target;
+    tipbox = el('div', 'tipbox');
+    tipbox.setAttribute('role', 'tooltip');
+    var title = el('div', 'tip-title');
+    title.innerHTML = '<svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 4.8v5M9 12.4v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+    title.appendChild(el('span', '', target.dataset.tipTitle));
+    tipbox.appendChild(title);
+    if (target.dataset.tipBody) {
+      tipbox.appendChild(el('div', 'tip-label', 'O que fazer'));
+      tipbox.appendChild(el('p', '', target.dataset.tipBody));
+    }
+    if (target.dataset.tipTech) tipbox.appendChild(el('div', 'tip-tech', target.dataset.tipTech));
+    document.body.appendChild(tipbox);
+    var r = target.getBoundingClientRect(), w = tipbox.offsetWidth, h = tipbox.offsetHeight;
+    var left = Math.min(Math.max(12, r.left), window.innerWidth - w - 12);
+    var top = r.bottom + 8;
+    if (top + h > window.innerHeight - 12) top = r.top - h - 8;  // Sem espaço embaixo: abre em cima.
+    tipbox.style.left = left + 'px';
+    tipbox.style.top = Math.max(12, top) + 'px';
+    requestAnimationFrame(function () { if (tipbox) tipbox.classList.add('show'); });
+  }
+  function hideTip() {
+    if (tipbox) tipbox.remove();
+    tipbox = tipFor = null;
+  }
+  function tipTarget(e) { return e.target.closest && e.target.closest('.has-tip'); }
+  document.addEventListener('mouseover', function (e) { var t = tipTarget(e); if (t) showTip(t); });
+  document.addEventListener('mouseout', function (e) {
+    var t = tipTarget(e);
+    if (t && !t.contains(e.relatedTarget)) hideTip();
+  });
+  document.addEventListener('focusin', function (e) { var t = tipTarget(e); if (t) showTip(t); });
+  document.addEventListener('focusout', function (e) { if (tipTarget(e)) hideTip(); });
+  // Toque no celular: abre e fecha no mesmo lugar.
+  document.addEventListener('click', function (e) {
+    var t = tipTarget(e);
+    if (t) { if (tipFor === t && e.pointerType === 'touch') hideTip(); else showTip(t); }
+    else hideTip();
+  });
+  window.addEventListener('scroll', hideTip, true);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') hideTip(); });
+
   // Atualiza só a área de dados, sem recarregar a página nem perder filtro/busca.
   var live = document.getElementById('live');
   if (!live) return;
@@ -73,6 +127,7 @@
       .then(function (html) {
         var next = new DOMParser().parseFromString(html, 'text/html').getElementById('live');
         if (!next) return;
+        hideTip();
         live.innerHTML = next.innerHTML;
         last = Date.now();
         tick();

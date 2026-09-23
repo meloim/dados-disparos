@@ -91,14 +91,41 @@ FAIL_REASONS = {
     470: 'Mais de 24h sem conversa com a pessoa: só template pode ser enviado',
 }
 
-def fail_reason(raw):
+# O que a pessoa pode fazer em cada caso.
+FAIL_TIPS = {
+    131026: 'Confira se o número está certo e tem WhatsApp. Se estiver, o app da pessoa pode estar desatualizado.',
+    131047: 'Envie usando um template aprovado.',
+    470: 'Envie usando um template aprovado.',
+    131049: 'Não reenvie agora: a Meta limita mensagens de marketing por pessoa. Tente outro dia.',
+    131050: 'A pessoa pediu para não receber marketing. Tire o número das próximas listas.',
+    131042: 'Confira a forma de pagamento no Gerenciador do WhatsApp da Meta.',
+    131048: 'Diminua o volume de envios e revise o texto: muita gente bloqueou ou denunciou.',
+    131056: 'Espere alguns minutos antes de enviar de novo para esse número.',
+    132000: 'Confira as variáveis do template na Datafy.',
+    132012: 'Confira as variáveis do template na Datafy.',
+    132001: 'Confira o nome e o idioma do template na Datafy.',
+    132015: 'Use outro template ou edite este para melhorar a qualidade.',
+    132016: 'Use outro template.',
+    130472: 'Nada a fazer: a Meta segurou a mensagem por um teste interno dela.',
+    131000: 'Tente enviar de novo mais tarde.',
+}
+
+def fail_info(raw):
+    """Motivo, sugestão e detalhe técnico de um status 'failed'."""
     try:
         err = (json.loads(raw).get('errors') or [{}])[0]
     except (ValueError, TypeError, AttributeError):
-        return ''
+        err = {}
     code = err.get('code')
     detail = (err.get('error_data') or {}).get('details') or err.get('message') or err.get('title') or ''
-    return FAIL_REASONS.get(code) or (f'{detail} (código {code})' if code else detail)
+    if not code and not detail:
+        return {'reason': 'Motivo não informado', 'tip': 'A Datafy não mandou o motivo desta falha. Confira o envio no painel da Datafy.', 'tech': ''}
+    return {'reason': FAIL_REASONS.get(code) or detail or 'Falha no envio',
+            'tip': FAIL_TIPS.get(code, 'Confira o envio no painel da Datafy.'),
+            'tech': ' · '.join(x for x in (f'Código {code}' if code else '', detail) if x)}
+
+def fail_reason(raw):
+    return fail_info(raw)['reason']
 
 def campaign_clock():
     return int(time.time())
@@ -460,7 +487,8 @@ def create_apps(db_path=None, settings=None):
             row['phone_fmt'] = pretty_phone(row['phone'])
             row['name_fmt'] = '' if row['name']==row['phone'] else row['name']
             failed = [e for e in evs if e['kind']=='status' and e['body']=='failed']
-            row['fail_reason'] = fail_reason(failed[-1]['raw']) if failed and row['status']=='failed' else ''
+            row['fail'] = fail_info(failed[-1]['raw']) if failed and row['status']=='failed' else None
+            row['fail_reason'] = row['fail']['reason'] if row['fail'] else ''
             row['result'] = replies[-1]['result'] if replies else 'pendente'
             row['answer'] = replies[-1]['body'] if replies else ''
             row['choice'] = replies[-1]['choice'] if replies else ''
@@ -507,7 +535,7 @@ def create_apps(db_path=None, settings=None):
         for s in sorted(sends.values(), key=lambda s: s['first']):
             g = groups.setdefault(phone_key(s['phone']), {'phone': s['phone'], 'contexts': [], 'first': s['first']})
             g['contexts'].append(s['context'])
-            g.update(last=s['first'], status=s['status'], reason=fail_reason(s['raw']) if s['status']=='failed' else '')
+            g.update(last=s['first'], status=s['status'], fail=fail_info(s['raw']) if s['status']=='failed' else None)
         unlinked_sends = sorted(groups.values(), key=lambda g: g['last'], reverse=True)[:500]
         rules = get_rules()
         show_results = bool(totals['aceitou'] or totals['recusou'] or rules.get('aceite') or rules.get('recusa'))
