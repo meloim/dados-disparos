@@ -42,6 +42,27 @@ def phone(value):
         raise ValueError('Telefone inválido. Use DDI + DDD + número, como 5511999999999.')
     return result
 
+def phone_key(value):
+    """Mesma chave para 5581999522801, 558199522801 e 81999522801.
+
+    O WhatsApp informa celulares brasileiros sem o nono dígito (WA ID),
+    enquanto as listas costumam trazê-lo.
+    """
+    digits = re.sub(r'\D', '', str(value))
+    if len(digits) in (10, 11):
+        digits = '55' + digits
+    if digits.startswith('55') and len(digits) == 13 and digits[4] == '9':
+        digits = digits[:4] + digits[5:]
+    return digits
+
+PHONE_HEADERS = {'telefone', 'phone', 'phone_number', 'numero', 'number', 'celular', 'whatsapp', 'wa_id', 'waid', 'fone', 'tel', 'mobile'}
+NAME_HEADERS = {'nome', 'name', 'nome_completo', 'cliente', 'first_name', 'primeiro_nome', 'full_name'}
+
+def header_key(value):
+    # "Número de WhatsApp" -> "numero_de_whatsapp"
+    text = unicodedata.normalize('NFKD', str(value)).encode('ascii', 'ignore').decode().strip().lower()
+    return re.sub(r'[^a-z0-9]+', '_', text).strip('_')
+
 def pretty_phone(value):
     digits = re.sub(r'\D', '', str(value))
     if digits.startswith('55') and len(digits) in (12, 13):
@@ -211,15 +232,29 @@ def create_apps(db_path=None, settings=None):
           AND EXISTS(SELECT 1 FROM outbounds o JOIN contacts ON contacts.id=o.contact_id WHERE o.id=events.context
           AND (events.kind='status' OR contacts.phone=events.phone))''')
 
+    def attach(db, contact_id, context):
+        db.execute('INSERT INTO outbounds VALUES(?,?) ON CONFLICT DO NOTHING',(context,contact_id))
+        db.execute('UPDATE contacts SET outbound=COALESCE(outbound,?) WHERE id=?',(context,contact_id))
+
     def capture_sends(db):
-        # Only the send moment identifies the campaign window: 'sent', or 'failed'
-        # when the message failed without ever being sent.
-        # Delivery/read can happen days later and must never select a new campaign.
+        # A Datafy não informa a campanha no webhook. O envio ('sent', ou 'failed' quando
+        # nem chegou a sair) é ligado pelo telefone ao contato de uma lista importada que
+        # ainda não tem envio: o envio mais recente fica com a lista mais recente, então
+        # várias campanhas podem rodar ao mesmo tempo.
+        # Sem lista, vale a captura por horário (modo antigo), se estiver ligada.
+        # Entrega/leitura podem chegar dias depois e nunca escolhem campanha.
+        waiting = {}
+        for c in db.execute('SELECT id,phone FROM contacts WHERE outbound IS NULL ORDER BY id DESC').fetchall():
+            waiting.setdefault(phone_key(c['phone']), []).append(c['id'])
         for ev in db.execute("""SELECT * FROM events WHERE kind='status' AND body IN ('sent','failed')
-                AND contact_id IS NULL ORDER BY ts""").fetchall():
+                AND contact_id IS NULL ORDER BY ts DESC""").fetchall():
             if not ev['context'] or not 10 <= len(ev['phone'] or '') <= 15:
                 continue
             if db.execute('SELECT 1 FROM outbounds WHERE id=?',(ev['context'],)).fetchone():
+                continue
+            listed = waiting.get(phone_key(ev['phone']))
+            if listed:
+                attach(db, listed.pop(0), ev['context'])
                 continue
             window = db.execute('''SELECT campaign FROM campaign_windows WHERE started<=?
                 AND (ended IS NULL OR ?<ended) ORDER BY started DESC LIMIT 1''',(ev['ts'],ev['ts'])).fetchone()
@@ -228,8 +263,7 @@ def create_apps(db_path=None, settings=None):
             db.execute('''INSERT INTO contacts(campaign,name,phone)
               VALUES(?,?,?) ON CONFLICT(campaign,phone) DO NOTHING''',(window['campaign'],ev['phone'],ev['phone']))
             contact = db.execute('SELECT id FROM contacts WHERE campaign=? AND phone=?',(window['campaign'],ev['phone'])).fetchone()
-            db.execute('INSERT INTO outbounds VALUES(?,?) ON CONFLICT DO NOTHING',(ev['context'],contact['id']))
-            db.execute('UPDATE contacts SET outbound=COALESCE(outbound,?) WHERE id=?',(ev['context'],contact['id']))
+            attach(db, contact['id'], ev['context'])
 
     @webhook.post('/webhook/datafy')
     def receive():
@@ -336,22 +370,34 @@ def create_apps(db_path=None, settings=None):
     @panel.get('/')
     def index():
         tab = 'config' if request.args.get('aba') == 'config' else 'painel'
+        all_rows = report()[0]
         with connect() as db:
             active = db.execute('SELECT * FROM campaign_windows WHERE ended IS NULL').fetchone()
-        # Opens on the running campaign; "Todas" is an explicit empty choice.
-        campaign = request.args.get('campanha', active['campaign'] if active else '')
-        rows, totals = report(campaign)
-        rows.sort(key=lambda r: r['last_ts'], reverse=True)  # Atividade mais recente primeiro.
-        with connect() as db:
             campaigns = [r['campaign'] for r in db.execute('SELECT campaign FROM contacts UNION SELECT campaign FROM campaign_windows ORDER BY campaign')]
-            unlinked = db.execute("SELECT COUNT(DISTINCT context) AS total FROM events WHERE kind='status' AND contact_id IS NULL").fetchone()['total']
+            loose = db.execute("""SELECT context,phone,ts,body FROM events WHERE kind='status'
+                AND contact_id IS NULL AND context IS NOT NULL ORDER BY ts""").fetchall()
             inbox = db.execute("SELECT * FROM events WHERE kind='reply' AND (contact_id IS NULL OR result='revisar') ORDER BY ts DESC LIMIT 200").fetchall()
             last = db.execute('SELECT MAX(ts) AS last_ts FROM events').fetchone()['last_ts']
+        # Abre na campanha com atividade mais recente; "Todas" é uma escolha explícita (vazia).
+        recent = max(all_rows, key=lambda r: r['last_ts'], default=None)
+        default = active['campaign'] if active else (recent['campaign'] if recent and recent['last_ts'] else '')
+        campaign = request.args.get('campanha', default)
+        rows, totals = report(campaign)
+        rows.sort(key=lambda r: r['last_ts'], reverse=True)  # Atividade mais recente primeiro.
+        # Envios sem campanha, um por mensagem, com o status mais avançado.
+        order = {'sent': 1, 'delivered': 2, 'read': 3, 'failed': 4}
+        sends = {}
+        for ev in loose:
+            s = sends.setdefault(ev['context'], {'context': ev['context'], 'phone': ev['phone'], 'first': ev['ts'], 'status': ev['body']})
+            if order.get(ev['body'], 0) > order.get(s['status'], 0):
+                s['status'] = ev['body']
+        unlinked_sends = sorted(sends.values(), key=lambda s: s['first'], reverse=True)[:500]
         return render_template('index.html', rows=rows, totals=totals, campaigns=campaigns,
             campaign=campaign, inbox=inbox, labels=LABELS, date_text=date_text,
             configured=bool(settings.get('webhook_secret') and settings.get('phone_number_id')),
-            last=date_text(last), all_contacts=report()[0], rules=get_rules(), active=active,
-            unlinked=unlinked, hosted=bool(os.environ.get('PANEL_PASSWORD')), tab=tab, pretty_phone=pretty_phone)
+            last=date_text(last), all_contacts=all_rows, rules=get_rules(), active=active,
+            unlinked=len(sends), unlinked_sends=unlinked_sends, hosted=bool(os.environ.get('PANEL_PASSWORD')),
+            tab=tab, pretty_phone=pretty_phone, phone_key=phone_key)
 
     @panel.post('/campanha')
     def campaign_control():
@@ -393,23 +439,60 @@ def create_apps(db_path=None, settings=None):
             upload = request.files.get('arquivo')
             if not upload:
                 raise ValueError('Selecione um CSV.')
-            raw = upload.read().decode('utf-8-sig')
-            dialect = csv.Sniffer().sniff(raw[:4096], delimiters=';,\t')
-            reader = csv.DictReader(io.StringIO(raw), dialect=dialect)
-            if not {'campanha','nome','telefone'}.issubset(reader.fieldnames or []):
-                raise ValueError('Colunas obrigatórias: campanha, nome, telefone. Opcional: mensagem_id.')
-            parsed = []
-            for n,row in enumerate(reader,2):
-                campaign, name = row['campanha'].strip(), row['nome'].strip()
-                number = phone(row['telefone'])
-                outbound = (row.get('mensagem_id') or '').strip() or None
-                if not campaign or not name or len(campaign)>150 or len(name)>200:
-                    raise ValueError(f'Linha {n}: nome e campanha precisam estar preenchidos e ter até 200/150 caracteres.')
+            data = upload.read()
+            try:
+                raw = data.decode('utf-8-sig')
+            except UnicodeDecodeError:  # CSV salvo pelo Excel no Windows.
+                raw = data.decode('cp1252')
+            try:
+                dialect = csv.Sniffer().sniff(raw[:4096], delimiters=';,\t')
+            except csv.Error:
+                dialect = csv.excel
+            table = [r for r in csv.reader(io.StringIO(raw), dialect=dialect) if any(c.strip() for c in r)]
+            if not table:
+                raise ValueError('O arquivo está vazio.')
+            looks_phone = lambda v: bool(re.fullmatch(r'[\d\s()+.-]+', v.strip())) and 10 <= len(re.sub(r'\D','',v)) <= 15
+            keys = [header_key(h) for h in table[0]]
+            has_header = not any(looks_phone(c) for c in table[0])
+            body = table[1:] if has_header else table
+            width = max(len(r) for r in body) if body else 0
+            col = lambda r, i: r[i].strip() if i is not None and i < len(r) else ''
+            # Coluna de telefone: pelo cabeçalho ou pela que mais parece telefone.
+            phone_col = next((i for i,k in enumerate(keys) if has_header and k in PHONE_HEADERS), None)
+            if phone_col is None:
+                scores = [sum(looks_phone(col(r,i)) for r in body) for i in range(width)]
+                if scores and max(scores) * 2 >= len(body) and max(scores) > 0:
+                    phone_col = scores.index(max(scores))
+            if phone_col is None:
+                raise ValueError('Não encontrei a coluna de telefone. Use um cabeçalho como "telefone".')
+            name_col = next((i for i,k in enumerate(keys) if has_header and (k in NAME_HEADERS or k.startswith('nome'))), None)
+            if name_col is None and not has_header:
+                name_col = next((i for i in range(width) if i != phone_col and
+                    sum(bool(col(r,i)) and not looks_phone(col(r,i)) for r in body) * 2 >= len(body)), None)
+            campaign_col = keys.index('campanha') if has_header and 'campanha' in keys else None
+            outbound_col = keys.index('mensagem_id') if has_header and 'mensagem_id' in keys else None
+            chosen = request.form.get('campanha', '').strip()
+            if not chosen and campaign_col is None:
+                raise ValueError('Informe o nome da campanha.')
+            parsed, skipped = [], 0
+            for n,row in enumerate(body, 2 if has_header else 1):
+                campaign = chosen or col(row, campaign_col)
+                try:
+                    number = phone(col(row, phone_col))
+                except ValueError:
+                    skipped += 1
+                    continue
+                if len(number) in (10, 11):
+                    number = '55' + number
+                name = col(row, name_col) or number
+                outbound = col(row, outbound_col) or None
+                if not campaign or len(campaign)>150 or len(name)>200:
+                    raise ValueError(f'Linha {n}: campanha precisa estar preenchida e ter até 150 caracteres; nome até 200.')
                 if outbound and not outbound.startswith('wamid.'):
                     raise ValueError(f'Linha {n}: mensagem_id deve ser o wamid retornado no envio; deixe vazio se não tiver.')
                 parsed.append((campaign,name,number,outbound))
             if not parsed:
-                raise ValueError('O arquivo não contém contatos.')
+                raise ValueError('O arquivo não contém telefones válidos.')
             with connect() as db:
                 for campaign,name,number,outbound in parsed:
                     old = db.execute('SELECT outbound FROM contacts WHERE campaign=? AND phone=?',(campaign,number)).fetchone()
@@ -418,12 +501,47 @@ def create_apps(db_path=None, settings=None):
                     db.execute('''INSERT INTO contacts(campaign,name,phone,outbound) VALUES(?,?,?,?)
                       ON CONFLICT(campaign,phone) DO UPDATE SET name=excluded.name,
                       outbound=COALESCE(contacts.outbound,excluded.outbound)''',(campaign,name,number,outbound))
+                capture_sends(db)
                 link_by_context(db)
-            flash(f'{len(parsed)} linhas importadas. Reimportações não duplicam contatos.')
+                names = sorted({p[0] for p in parsed})
+                linked = sum(db.execute('SELECT COUNT(*) AS n FROM contacts WHERE campaign=? AND outbound IS NOT NULL',(c,)).fetchone()['n'] for c in names)
+            msg = f'{len(parsed)} contato(s) importado(s) em “{", ".join(names)}”.'
+            if linked:
+                msg += f' {linked} já com envio registrado.'
+            if skipped:
+                msg += f' {skipped} linha(s) ignorada(s) por telefone inválido.'
+            flash(msg)
         except (ValueError, UnicodeError, csv.Error, sqlite3.IntegrityError,
                 psycopg.IntegrityError if psycopg else sqlite3.IntegrityError) as exc:
             flash('Importação cancelada: '+str(exc))
         return redirect(url_for('index', aba='config'))
+
+    @panel.post('/mover')
+    def move_unlinked():
+        campaign = request.form.get('campanha','').strip()
+        contexts = request.form.getlist('envio')
+        if not 1 <= len(campaign) <= 150 or not contexts:
+            flash('Escolha a campanha e pelo menos um envio.')
+            return redirect(url_for('index', aba='config'))
+        moved = 0
+        with connect() as db:
+            for context in contexts:
+                ev = db.execute("""SELECT phone FROM events WHERE kind='status' AND context=?
+                    AND contact_id IS NULL LIMIT 1""",(context,)).fetchone()
+                if not ev or db.execute('SELECT 1 FROM outbounds WHERE id=?',(context,)).fetchone():
+                    continue
+                key = phone_key(ev['phone'])
+                contact_id = next((c['id'] for c in db.execute('SELECT id,phone FROM contacts WHERE campaign=?',(campaign,)).fetchall()
+                    if phone_key(c['phone'])==key), None)
+                if contact_id is None:
+                    db.execute('INSERT INTO contacts(campaign,name,phone) VALUES(?,?,?)',(campaign,ev['phone'],ev['phone']))
+                    contact_id = db.execute('SELECT id FROM contacts WHERE campaign=? AND phone=?',(campaign,ev['phone'])).fetchone()['id']
+                attach(db, contact_id, context)
+                moved += 1
+            link_by_context(db)
+            db.execute('INSERT INTO audit(ts,action) VALUES(?,?)',(int(time.time()),json.dumps({'action':'mover','campaign':campaign,'envios':contexts})))
+        flash(f'{moved} envio(s) movido(s) para “{campaign}”.')
+        return redirect(url_for('index', campanha=campaign))
 
     @panel.post('/revisar')
     def review():

@@ -43,6 +43,11 @@
     applyFilter();
   }
 
+  var all = document.getElementById('check-all');
+  if (all) all.addEventListener('change', function () {
+    document.querySelectorAll('input[name="envio"]').forEach(function (c) { c.checked = all.checked; });
+  });
+
   var pick = document.getElementById('campaign-pick');
   if (pick) pick.addEventListener('change', function () { pick.form.submit(); });
 

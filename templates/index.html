@@ -48,11 +48,9 @@
     </select>
     <noscript><button>Ver</button></noscript>
   </form>
-  {% if active %}
-    <span class="live"><i></i>Capturando: {{active.campaign}}</span>
-  {% else %}
-    <span class="idle">Nenhuma campanha capturando · <a href="{{ url_for('index', aba='config') }}">ativar</a></span>
-  {% endif %}
+  <span class="live"><i></i>Recebendo eventos</span>
+  {% if unlinked %}<a class="idle" href="{{ url_for('index', aba='config') }}#sem-campanha">{{ unlinked }} envio(s) sem campanha</a>{% endif %}
+  <a class="btn ghost" href="{{ url_for('index', aba='config') }}">+ Nova campanha</a>
   <span class="spacer"></span>
   <span class="updated" id="updated">Atualizado agora</span>
   <a class="btn ghost" href="{{url_for('export',campanha=campaign)}}">
@@ -143,7 +141,7 @@
     <div class="empty">
       <svg width="48" height="48" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M4 5h16v11H9l-5 4z"/></svg>
       <p><b>Nenhum disparo registrado{% if campaign %} em “{{ campaign }}”{% endif %}.</b><br>
-      {% if active %}Os envios aparecem aqui automaticamente assim que a Datafy disparar.{% else %}Ative uma campanha em <a href="{{ url_for('index', aba='config') }}">Configurações</a> antes de disparar.{% endif %}</p>
+      {% if campaign %}Suba a lista de contatos desta campanha em <a href="{{ url_for('index', aba='config') }}">Configurações</a>. Os envios para esses números aparecem aqui automaticamente.{% else %}Crie uma campanha em <a href="{{ url_for('index', aba='config') }}">Configurações</a> subindo o mesmo CSV usado na Datafy.{% endif %}</p>
     </div>
   {% endif %}
   <div id="no-match" class="empty hidden">Nenhum contato neste filtro.</div>
@@ -156,15 +154,19 @@
 <div class="config-stack">
 <div class="grid2">
   <section class="card">
-    <h2>Campanha</h2>
-    <p class="muted">A Datafy não informa o nome da campanha. Por isso, ative aqui <b>antes</b> de disparar: tudo que sair do número enquanto ela estiver ativa entra nela.</p>
+    <h2>Nova campanha</h2>
+    <p class="muted">Suba o <b>mesmo CSV</b> que você usou na Datafy, do jeito que ele está. O painel acha sozinho as colunas de telefone e nome. Os envios para esses números entram nesta campanha, antes ou depois do disparo, e várias campanhas podem rodar ao mesmo tempo.</p>
+    <form action="/importar" method="post" enctype="multipart/form-data" class="config-stack" style="gap:10px">
+      <input type="hidden" name="csrf" value="{{session.csrf}}">
+      <input name="campanha" list="campaign-names" placeholder="Nome da campanha (ex.: Teste webhook 2.0)" maxlength="150" required aria-label="Nome da campanha">
+      <input aria-label="Arquivo CSV" type="file" name="arquivo" accept=".csv,text/csv" required>
+      <div class="row"><button>Importar lista</button><span class="help" style="margin:0">Usar um nome que já existe acrescenta contatos a ela.</span></div>
+    </form>
+    <datalist id="campaign-names">{% for c in campaigns %}<option value="{{c}}">{% endfor %}</datalist>
     {% if active %}
-      <div class="status-box on"><b><span class="live" style="padding:0;background:none"><i></i>{{active.campaign}}</span></b>Capturando desde {{date_text(active.started)}}</div>
-      <form action="/campanha" method="post"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="acao" value="encerrar"><button class="danger">Encerrar captura</button></form>
-      <p class="help">Depois de encerrar, entregas, leituras e respostas dos envios já registrados continuam chegando normalmente.</p>
-    {% else %}
-      <div class="status-box"><b>Nenhuma campanha ativa</b>Disparos feitos agora ficam sem campanha.</div>
-      <form action="/campanha" method="post" class="row"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="acao" value="ativar"><input name="nome" aria-label="Nome da campanha" placeholder="Nome da campanha" maxlength="150" required style="flex:1"><button>Ativar campanha</button></form>
+      <div class="status-box on" style="margin-top:16px"><b>Captura por horário ligada: {{active.campaign}}</b>Modo antigo: envios para números fora das listas entram nesta campanha desde {{date_text(active.started)}}. Com várias campanhas ao mesmo tempo, é melhor encerrar.
+        <form action="/campanha" method="post" style="margin-top:10px"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="acao" value="encerrar"><button class="danger">Encerrar captura por horário</button></form>
+      </div>
     {% endif %}
   </section>
 
@@ -174,10 +176,36 @@
       <a class="btn ghost" href="{{url_for('export')}}">Excel de todas as campanhas</a>
       <a class="btn ghost" href="/backup">Salvar backup</a>
     </div>
-    {% if unlinked %}<p class="help"><b>{{unlinked}} envio(s) sem campanha.</b> Foram disparados enquanto nenhuma campanha estava ativa. Aparecem no Excel de todas as campanhas.</p>{% endif %}
     <p class="help">Último evento recebido: {{ last or 'nenhum' }}.</p>
   </section>
 </div>
+
+<section class="card" id="sem-campanha">
+  <h2>Envios sem campanha {% if unlinked %}<span class="count">{{ unlinked }}</span>{% endif %}</h2>
+  {% if unlinked_sends %}
+  <p class="muted">Números que não estão em nenhuma lista importada. Importe a lista da campanha acima (eles são ligados na hora) ou selecione e mova manualmente.</p>
+  <form action="/mover" method="post">
+    <input type="hidden" name="csrf" value="{{session.csrf}}">
+    <div class="row" style="margin-bottom:10px">
+      <input name="campanha" list="campaign-names" placeholder="Mover para a campanha…" maxlength="150" required aria-label="Campanha de destino" style="flex:1;min-width:220px">
+      <button>Mover selecionados</button>
+    </div>
+    <div class="scroll" style="max-height:420px;overflow-y:auto">
+    <table>
+      <thead><tr><th><input type="checkbox" id="check-all" aria-label="Selecionar todos"></th><th>Telefone</th><th>Status</th><th>Disparo</th></tr></thead>
+      <tbody>
+      {% for s in unlinked_sends %}
+        <tr><td><input type="checkbox" name="envio" value="{{ s.context }}" aria-label="Selecionar {{ s.phone }}"></td>
+          <td>{{ pretty_phone(s.phone) }}</td>
+          <td><span class="state s-{{ s.status }}">{{ tick(s.status) }}<span>{{ {'sent':'Enviada','delivered':'Entregue','read':'Lida','failed':'Falhou'}[s.status] }}</span></span></td>
+          <td><small>{{ date_text(s.first)[:16] }}</small></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </form>
+  {% else %}<p>Todos os envios recebidos estão ligados a uma campanha. 👌</p>{% endif %}
+</section>
 
 <section class="card">
   <h2>Respostas para revisar {% if inbox %}<span class="count">{{ inbox|length }}</span>{% endif %}</h2>
@@ -188,7 +216,7 @@
     <span class="bubble">{{e.body}}</span>
     {% if e.choice %}<p class="help">ID do botão: <code>{{e.choice}}</code></p>{% endif %}
     <form action="/revisar" method="post" class="row"><input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="evento" value="{{e.id}}">
-      <select name="contato" aria-label="Campanha do contato" required><option value="">Campanha deste contato…</option>{% for c in all_contacts if c.phone==e.phone %}<option value="{{c.id}}" {% if e.contact_id==c.id %}selected{% endif %}>{{c.campaign}}{% if c.name != c.phone %} — {{c.name}}{% endif %}</option>{% endfor %}</select>
+      <select name="contato" aria-label="Campanha do contato" required><option value="">Campanha deste contato…</option>{% for c in all_contacts if phone_key(c.phone)==phone_key(e.phone) %}<option value="{{c.id}}" {% if e.contact_id==c.id %}selected{% endif %}>{{c.campaign}}{% if c.name != c.phone %} — {{c.name}}{% endif %}</option>{% endfor %}</select>
       <select name="resultado" aria-label="Resultado"><option value="revisar">Manter em revisão</option><option value="aceitou">Aceitou</option><option value="recusou">Recusou</option></select>
       <button>Salvar</button>
     </form>
@@ -210,13 +238,6 @@
   </details>
 </section>
 
-<section class="card">
-  <details>
-    <summary>Adicionar nomes aos contatos (opcional)</summary>
-    <p class="muted">Sem isso, os contatos aparecem só pelo telefone. Importe um CSV com as colunas <b>campanha, nome, telefone</b>, usando o mesmo nome da campanha e telefone com DDI e DDD (ex.: 5571999999999).</p>
-    <form action="/importar" method="post" enctype="multipart/form-data" class="row"><input type="hidden" name="csrf" value="{{session.csrf}}"><input aria-label="Arquivo CSV" type="file" name="arquivo" accept=".csv" required><button>Importar nomes</button><a href="/modelo.csv">Baixar modelo</a></form>
-  </details>
-</section>
 </div>
 {% endif %}
 </main>

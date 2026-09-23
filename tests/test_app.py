@@ -148,6 +148,47 @@ class Integration(unittest.TestCase):
         self.assertEqual(self.scalar('SELECT campaign FROM contacts'),'Falhas')
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM events WHERE contact_id IS NULL'),0)
         self.assertIn('Falhou',self.panel.get('/?campanha=Falhas').get_data(as_text=True))
+    def import_list(self,campaign,body):
+        return self.panel.post('/importar',data={'csrf':self.csrf,'campanha':campaign,'arquivo':(io.BytesIO(body.encode()),'lista.csv')})
+    def status_to(self,mid,phone,ts,state='sent'):
+        return {'id':mid,'timestamp':str(ts),'status':state,'recipient_id':phone}
+    def test_concurrent_campaigns_by_contact_list(self):
+        now=int(time.time())
+        # CSV da Datafy como vem: cabeçalho livre, número com nono dígito.
+        self.import_list('A','Nome,Número de WhatsApp\nMaria,5581999522801\nJoão,81988343030\n')
+        self.import_list('B','telefone;nome\n5571999342429;Ana\n')
+        # WhatsApp informa celulares sem o nono dígito.
+        self.send(statuses=[self.status_to('wamid.a1','558199522801',now,'failed'),
+                            self.status_to('wamid.b1','557199342429',now),
+                            self.status_to('wamid.a2','558188343030',now)])
+        db=sqlite3.connect(self.db)
+        try:campaigns=dict(db.execute('SELECT phone,campaign FROM contacts WHERE outbound IS NOT NULL').fetchall())
+        finally:db.close()
+        self.assertEqual(campaigns,{'5581999522801':'A','5581988343030':'A','5571999342429':'B'})
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM events WHERE contact_id IS NULL'),0)
+        self.assertEqual(self.scalar("SELECT name FROM contacts WHERE phone='5581988343030'"),'João')
+    def test_list_imported_after_send_links_old_events(self):
+        now=int(time.time())
+        self.send(statuses=[self.status_to('wamid.x','558199522801',now,'failed')])
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM contacts'),0)
+        self.import_list('Depois','5581999522801\n')
+        self.assertEqual(self.scalar('SELECT campaign FROM contacts WHERE outbound IS NOT NULL'),'Depois')
+        self.assertIn('Falhou',self.panel.get('/?campanha=Depois').get_data(as_text=True))
+    def test_same_phone_goes_to_newest_list(self):
+        now=int(time.time())
+        self.import_list('Velha','telefone\n5511999999999\n')
+        self.send(statuses=[self.status_to('wamid.v','5511999999999',now-100)])
+        self.import_list('Nova','telefone\n5511999999999\n')
+        self.send(statuses=[self.status_to('wamid.n','5511999999999',now)])
+        self.assertEqual(self.scalar("SELECT c.campaign FROM outbounds o JOIN contacts c ON c.id=o.contact_id WHERE o.id='wamid.v'"),'Velha')
+        self.assertEqual(self.scalar("SELECT c.campaign FROM outbounds o JOIN contacts c ON c.id=o.contact_id WHERE o.id='wamid.n'"),'Nova')
+    def test_move_unlinked_send(self):
+        now=int(time.time())
+        self.send(statuses=[self.status_to('wamid.m','558199522801',now,'delivered'),self.status_to('wamid.m','558199522801',now,'sent')])
+        self.assertIn('wamid.m',self.panel.get('/?aba=config').get_data(as_text=True))
+        self.panel.post('/mover',data={'csrf':self.csrf,'campanha':'Manual','envio':['wamid.m']})
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM events WHERE contact_id IS NULL'),0)
+        self.assertEqual(self.scalar('SELECT campaign FROM contacts'),'Manual')
     def test_rules_persist_and_reject_overlap(self):
         self.panel.post('/regras',data={'csrf':self.csrf,'aceite':'YES','recusa':'yes'})
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM preferences'),0)
