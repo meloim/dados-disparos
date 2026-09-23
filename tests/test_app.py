@@ -59,6 +59,9 @@ class Integration(unittest.TestCase):
             client = cloud.test_client()
             self.assertEqual(client.get('/').status_code,302)
             self.assertEqual(client.get('/healthz').status_code,200)
+            # A tela de login precisa do CSS e da logo antes de entrar.
+            self.assertEqual(client.get('/static/app.css').status_code,200)
+            self.assertEqual(client.get('/static/logo-construir.svg').status_code,200)
             self.assertEqual(client.post('/webhook/datafy').status_code,401)
             client.get('/login')
             with client.session_transaction() as sess: csrf=sess['csrf']

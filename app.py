@@ -264,7 +264,8 @@ def create_apps(db_path=None, settings=None):
 
     @panel.before_request
     def csrf_check():
-        public = request.endpoint in ('login', 'health') or request.path == '/webhook/datafy'
+        # CSS, JS e logo são públicos: a própria tela de login depende deles.
+        public = request.endpoint in ('login', 'health', 'static') or request.path == '/webhook/datafy'
         if not public and os.environ.get('PANEL_PASSWORD') and not session.get('authenticated'):
             return redirect(url_for('login', next=request.path))
         if request.method == 'POST' and not secrets.compare_digest(session.get('csrf', ''), request.form.get('csrf', '!')):
