@@ -318,11 +318,11 @@ def create_apps(db_path=None, settings=None):
         campaign = request.args.get('campanha','')
         rows, totals = report(campaign)
         with connect() as db:
-            campaigns = [r[0] for r in db.execute('SELECT campaign FROM contacts UNION SELECT campaign FROM campaign_windows ORDER BY campaign')]
+            campaigns = [r['campaign'] for r in db.execute('SELECT campaign FROM contacts UNION SELECT campaign FROM campaign_windows ORDER BY campaign')]
             active = db.execute('SELECT * FROM campaign_windows WHERE ended IS NULL').fetchone()
-            unlinked = db.execute("SELECT COUNT(DISTINCT context) FROM events WHERE kind='status' AND contact_id IS NULL").fetchone()[0]
+            unlinked = db.execute("SELECT COUNT(DISTINCT context) AS total FROM events WHERE kind='status' AND contact_id IS NULL").fetchone()['total']
             inbox = db.execute("SELECT * FROM events WHERE kind='reply' AND (contact_id IS NULL OR result='revisar') ORDER BY ts DESC LIMIT 200").fetchall()
-            last = db.execute('SELECT MAX(ts) FROM events').fetchone()[0]
+            last = db.execute('SELECT MAX(ts) AS last_ts FROM events').fetchone()['last_ts']
         return render_template('index.html', rows=rows, totals=totals, campaigns=campaigns,
             campaign=campaign, inbox=inbox, labels=LABELS, date_text=date_text,
             configured=bool(settings.get('webhook_secret') and settings.get('phone_number_id')),
