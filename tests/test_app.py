@@ -67,7 +67,8 @@ class Integration(unittest.TestCase):
             client.get('/login')
             with client.session_transaction() as sess: csrf=sess['csrf']
             self.assertEqual(client.post('/login',data={'csrf':csrf,'username':'admin','password':'wrong'}).status_code,200)
-            self.assertEqual(client.post('/login',data={'csrf':csrf,'username':'admin','password':'strong-test-password'}).status_code,302)
+            self.assertEqual(client.post('/login',data={'csrf':csrf,'username':'admin','password':'STRONG-test-password'}).status_code,200)
+            self.assertEqual(client.post('/login',data={'csrf':csrf,'username':' Admin ','password':'strong-test-password'}).status_code,302)
             self.assertEqual(client.get('/').status_code,200)
         finally:
             if old_password is None: os.environ.pop('PANEL_PASSWORD',None)

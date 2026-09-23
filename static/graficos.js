@@ -38,6 +38,19 @@
     var max = Math.max(4, Math.floor(px / 7));
     return text.length > max ? text.slice(0, max - 1) + '…' : text;
   }
+  function wrap(text, px, maxLines) {  // Quebra por palavras em até maxLines linhas.
+    var max = Math.max(4, Math.floor(px / 7)), lines = [], line = '';
+    text.split(' ').forEach(function (word) {
+      if ((line + ' ' + word).trim().length > max && line) { lines.push(line); line = word; }
+      else line = (line + ' ' + word).trim();
+    });
+    lines.push(line);
+    if (lines.length > maxLines) {
+      lines = lines.slice(0, maxLines);
+      lines[maxLines - 1] = fit(lines[maxLines - 1] + ' …', px);
+    }
+    return lines;
+  }
   function tip(node, title, lines) {
     node.setAttribute('data-tip', title);
     node.setAttribute('data-tip-lines', JSON.stringify(lines));
@@ -49,8 +62,10 @@
     var series = [['delivered', 'Entregues', v('--stage-1')], ['read', 'Lidas', v('--stage-2')],
                   ['replied', 'Responderam', v('--stage-3')]];
     if (data.show_accepted) series.push(['accepted', 'Aceitaram', v('--stage-4')]);
-    var thick = 8, gap = 2, groupH = series.length * thick + (series.length - 1) * gap, rowGap = 20;
-    var labelW = Math.min(220, Math.max(110, W * 0.26)), x0 = labelW + 12, x1 = W - 44, top = 6;
+    var thick = 8, gap = 2, bars = series.length * thick + (series.length - 1) * gap, rowGap = 20;
+    // Tela estreita: nome da campanha em cima das barras, na largura toda.
+    var stacked = W < 480, head = stacked ? 20 : 0, groupH = head + bars;
+    var labelW = stacked ? 0 : Math.min(220, Math.max(110, W * 0.26)), x0 = stacked ? 0 : labelW + 12, x1 = W - 44, top = 6;
     var H = top + rows.length * (groupH + rowGap) + 16;
     var s = svg(box, W, H), g = el('g', {}, s);
     [0, 25, 50, 75, 100].forEach(function (t) {
@@ -60,10 +75,12 @@
     });
     rows.forEach(function (c, i) {
       var y = top + i * (groupH + rowGap);
-      var name = el('text', {x: labelW, y: y + groupH / 2 + 4, 'text-anchor': 'end', class: 'lbl'}, g, fit(c.name, labelW));
+      var name = stacked
+        ? el('text', {x: 0, y: y + 13, class: 'lbl'}, g, fit(c.name, W))
+        : el('text', {x: labelW, y: y + groupH / 2 + 4, 'text-anchor': 'end', class: 'lbl'}, g, fit(c.name, labelW));
       el('title', {}, name, c.name + ' · ' + c.sent + ' enviados');
       series.forEach(function (sr, j) {
-        var yy = y + j * (thick + gap), value = c[sr[0] + '_pct'];
+        var yy = y + head + j * (thick + gap), value = c[sr[0] + '_pct'];
         hbar(g, x0, yy, (x1 - x0) * value / 100, thick, sr[2]);
         if (sr[0] === 'replied') el('text', {x: x0 + (x1 - x0) * value / 100 + 6, y: yy + thick - 0.5, class: 'val'}, g, pct(value));
       });
@@ -127,16 +144,19 @@
 
   // 4. Motivos das falhas: barras horizontais com o motivo em cima e o total na ponta.
   function drawFailures(box) {
-    var rows = data.failures, W = box.clientWidth, thick = 14, rowH = 18 + thick + 14;
-    var H = rows.length * rowH, max = Math.max.apply(null, rows.map(function (r) { return r.n; }));
-    var s = svg(box, W, H), g = el('g', {}, s), barMax = W - 48;
+    var rows = data.failures, W = box.clientWidth, thick = 14, lineH = 16;
+    var max = Math.max.apply(null, rows.map(function (r) { return r.n; })), barMax = W - 48;
+    var texts = rows.map(function (r) { return wrap(r.reason, W, 2); });
+    var H = texts.reduce(function (sum, t) { return sum + t.length * lineH + 4 + thick + 14; }, 0);
+    var s = svg(box, W, H), g = el('g', {}, s), y = 0;
     rows.forEach(function (r, i) {
-      var y = i * rowH;
-      el('text', {x: 0, y: y + 13, class: 'lbl'}, g, fit(r.reason, W));
+      var top = y, textH = texts[i].length * lineH;
+      texts[i].forEach(function (line, k) { el('text', {x: 0, y: y + 13 + k * lineH, class: 'lbl'}, g, line); });
       var w = Math.max(3, barMax * r.n / max);
-      hbar(g, 0, y + 18, w, thick, v('--critical'));
-      el('text', {x: w + 8, y: y + 18 + thick - 2, class: 'val'}, g, String(r.n));
-      var hit = el('rect', {x: 0, y: y, width: W, height: rowH - 6, style: 'fill:transparent'}, g);
+      hbar(g, 0, y + textH + 4, w, thick, v('--critical'));
+      el('text', {x: w + 8, y: y + textH + 4 + thick - 2, class: 'val'}, g, String(r.n));
+      y += textH + 4 + thick + 14;
+      var hit = el('rect', {x: 0, y: top, width: W, height: y - top - 6, style: 'fill:transparent'}, g);
       tip(hit, r.reason, [['', r.n + ' de ' + data.failed + ' falhas (' + pct(r.n * 100 / data.failed) + ')']]);
     });
   }

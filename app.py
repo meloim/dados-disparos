@@ -314,7 +314,9 @@ def create_apps(db_path=None, settings=None):
         if request.method == 'POST':
             username = os.environ.get('PANEL_USERNAME', 'admin')
             password = os.environ.get('PANEL_PASSWORD', '')
-            ok = password and secrets.compare_digest(request.form.get('username',''), username)
+            # Usuário não diferencia maiúsculas ("Admin" = "admin"); a senha diferencia.
+            typed = request.form.get('username','').strip().lower()
+            ok = password and secrets.compare_digest(typed.encode(), username.strip().lower().encode())
             ok = ok and secrets.compare_digest(request.form.get('password',''), password)
             if ok:
                 session.clear()

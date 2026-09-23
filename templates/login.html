@@ -62,7 +62,7 @@ label{display:block;margin:16px 0 6px;font-size:13px;font-weight:600}
     {% for message in get_flashed_messages() %}<div class="flash">{{message}}</div>{% endfor %}
     <form method="post">
       <input type="hidden" name="csrf" value="{{session.csrf}}">
-      <label for="u">Usuário</label><input id="u" name="username" autocomplete="username" required autofocus>
+      <label for="u">Usuário</label><input id="u" name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required autofocus>
       <label for="p">Senha</label><input id="p" type="password" name="password" autocomplete="current-password" required>
       <button>Entrar</button>
     </form>
