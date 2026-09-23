@@ -303,23 +303,26 @@
   <h2>Envios sem campanha {% if unlinked_sends %}<span class="count">{{ unlinked_sends|length }}</span>{% endif %}</h2>
   {% if unlinked_sends %}
   <p class="muted">Disparos para números que não estão em nenhuma lista importada. Normalmente são <b>testes</b> ou números que faltaram no CSV. Importe a lista da campanha acima, mova para uma campanha ou descarte.</p>
-  <form action="/mover" method="post">
+  <form action="/mover" method="post" id="move-form">
     <input type="hidden" name="csrf" value="{{session.csrf}}">
-    <div class="row" style="margin-bottom:10px">
-      <select name="campanha" aria-label="Campanha de destino">
-        <option value="">Mover para…</option>
-        {% for c in campaigns %}<option>{{ c }}</option>{% endfor %}
-      </select>
-      <input name="nova" placeholder="ou nova campanha" maxlength="150" aria-label="Nova campanha" style="width:180px">
-      <button name="acao" value="mover">Mover selecionados</button>
-      <button name="acao" value="descartar" class="btn ghost">Descartar selecionados</button>
+    <div class="move-bar">
+      <span class="move-count" id="move-count">1. Marque os números na lista</span>
+      <label class="move-dest">2. Mover os marcados para:
+        <select name="campanha" id="move-to" aria-label="Campanha de destino">
+          <option value="">escolha a campanha…</option>
+          {% for c in campaigns %}<option>{{ c }}</option>{% endfor %}
+        </select>
+      </label>
+      <input name="nova" id="move-new" placeholder="ou digite uma nova" maxlength="150" aria-label="Nova campanha" style="width:170px">
+      <button name="acao" value="mover" id="move-btn" disabled>Mover</button>
+      <button name="acao" value="descartar" id="discard-btn" class="btn ghost" disabled>Descartar</button>
     </div>
     <div class="scroll" style="max-height:420px;overflow-y:auto">
     <table>
       <thead><tr><th><input type="checkbox" id="check-all" aria-label="Selecionar todos"></th><th>Telefone</th><th>Status do último envio</th><th>Disparo</th></tr></thead>
       <tbody>
       {% for s in unlinked_sends %}
-        <tr><td><input type="checkbox" name="envio" value="{{ s.contexts|join(' ') }}" aria-label="Selecionar {{ pretty_phone(s.phone) }}"></td>
+        <tr class="pick-row"><td><input type="checkbox" name="envio" value="{{ s.contexts|join(' ') }}" aria-label="Selecionar {{ pretty_phone(s.phone) }}"></td>
           <td><b>{{ pretty_phone(s.phone) }}</b>{% if s.contexts|length > 1 %}<small> · {{ s.contexts|length }} envios</small>{% endif %}</td>
           <td>{{ status_cell(s.status, status_label[s.status], '', s.fail) }}</td>
           <td><small>{{ date_text(s.last)[:16] }}</small></td></tr>

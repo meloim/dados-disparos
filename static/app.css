@@ -92,6 +92,14 @@ button.ok{background:var(--ok)}
 .tipbox .tip-label{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:700;margin:10px 0 2px}
 .tipbox p{margin:0}
 .tipbox .tip-tech{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);font-family:ui-monospace,Consolas,monospace;overflow-wrap:anywhere}
+.move-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;padding:10px 12px;border-radius:12px;background:var(--surface-2)}
+.move-count{font-size:13px;font-weight:600;color:var(--muted);min-width:170px}
+.move-count.on{color:var(--ok)}
+.move-dest{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600}
+.move-dest select{max-width:280px}
+button:disabled{opacity:.45;cursor:not-allowed;filter:none}
+.pick-row{cursor:pointer}
+.pick-row.picked td{background:var(--ok-bg)}
 .reply-head small{margin-left:6px}
 .outcomes{display:flex;flex-wrap:wrap;gap:8px;margin:-6px 0 18px;align-items:center;font-size:13px;color:var(--muted)}
 

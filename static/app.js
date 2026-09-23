@@ -44,10 +44,47 @@
     applyFilter();
   }
 
-  var all = document.getElementById('check-all');
-  if (all) all.addEventListener('change', function () {
-    document.querySelectorAll('input[name="envio"]').forEach(function (c) { c.checked = all.checked; });
-  });
+  // "Envios sem campanha": botões só liberam com algo marcado e campanha escolhida.
+  var moveForm = document.getElementById('move-form');
+  if (moveForm) {
+    var all = document.getElementById('check-all');
+    var boxes = moveForm.querySelectorAll('input[name="envio"]');
+    var count = document.getElementById('move-count');
+    var moveTo = document.getElementById('move-to'), moveNew = document.getElementById('move-new');
+    var moveBtn = document.getElementById('move-btn'), discardBtn = document.getElementById('discard-btn');
+    var sync = function () {
+      var n = moveForm.querySelectorAll('input[name="envio"]:checked').length;
+      var dest = moveNew.value.trim() || moveTo.value;
+      count.textContent = n ? n + (n === 1 ? ' número marcado' : ' números marcados') : '1. Marque os números na lista';
+      count.classList.toggle('on', n > 0);
+      moveBtn.disabled = !n || !dest;
+      moveBtn.title = !n ? 'Marque pelo menos um número' : (!dest ? 'Escolha a campanha de destino' : '');
+      discardBtn.disabled = !n;
+      if (all) all.checked = n > 0 && n === boxes.length;
+      moveForm.querySelectorAll('.pick-row').forEach(function (tr) {
+        tr.classList.toggle('picked', tr.querySelector('input').checked);
+      });
+    };
+    if (all) all.addEventListener('change', function () {
+      boxes.forEach(function (c) { c.checked = all.checked; });
+      sync();
+    });
+    moveForm.addEventListener('change', sync);
+    moveNew.addEventListener('input', sync);
+    // Clicar em qualquer ponto da linha marca/desmarca.
+    moveForm.addEventListener('click', function (e) {
+      var tr = e.target.closest('.pick-row');
+      if (!tr || e.target.tagName === 'INPUT') return;
+      var cb = tr.querySelector('input');
+      cb.checked = !cb.checked;
+      sync();
+    });
+    discardBtn.addEventListener('click', function (e) {
+      var n = moveForm.querySelectorAll('input[name="envio"]:checked').length;
+      if (!confirm('Descartar ' + n + (n === 1 ? ' número' : ' números') + '? Eles somem desta lista, mas continuam no Excel.')) e.preventDefault();
+    });
+    sync();
+  }
 
   var pick = document.getElementById('campaign-pick');
   if (pick) pick.addEventListener('change', function () { pick.form.submit(); });

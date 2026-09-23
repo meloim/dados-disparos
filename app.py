@@ -803,11 +803,11 @@ def create_apps(db_path=None, settings=None):
                     db.execute("UPDATE events SET association=? WHERE kind='status' AND context=? AND contact_id IS NULL",(DISCARDED,context))
                 db.execute('INSERT INTO audit(ts,action) VALUES(?,?)',(int(time.time()),json.dumps({'action':'descartar','envios':contexts})))
             flash(f'{len(contexts)} envio(s) descartado(s). Eles continuam no Excel de todas as campanhas.')
-            return redirect(url_for('index', aba='config'))
+            return redirect(url_for('index', aba='config', _anchor='sem-campanha'))
         campaign = (request.form.get('nova','').strip() or request.form.get('campanha','').strip())
         if not 1 <= len(campaign) <= 150 or not contexts:
             flash('Marque pelo menos um envio e escolha a campanha.')
-            return redirect(url_for('index', aba='config'))
+            return redirect(url_for('index', aba='config', _anchor='sem-campanha'))
         moved = 0
         with connect() as db:
             for context in contexts:
