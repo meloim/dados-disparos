@@ -141,6 +141,13 @@ class Integration(unittest.TestCase):
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM contacts'),0)
         self.activate('Outra',now+1)
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM campaign_windows'),1)
+    def test_failed_send_is_captured(self):
+        now=int(time.time())
+        self.activate('Falhas',now-10)
+        self.send(statuses=[self.status('wamid.fail',now,'failed')])
+        self.assertEqual(self.scalar('SELECT campaign FROM contacts'),'Falhas')
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM events WHERE contact_id IS NULL'),0)
+        self.assertIn('Falhou',self.panel.get('/?campanha=Falhas').get_data(as_text=True))
     def test_rules_persist_and_reject_overlap(self):
         self.panel.post('/regras',data={'csrf':self.csrf,'aceite':'YES','recusa':'yes'})
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM preferences'),0)

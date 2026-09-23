@@ -205,9 +205,11 @@ def create_apps(db_path=None, settings=None):
           AND (events.kind='status' OR contacts.phone=events.phone))''')
 
     def capture_sends(db):
-        # Only the original sent timestamp identifies the campaign window.
+        # Only the send moment identifies the campaign window: 'sent', or 'failed'
+        # when the message failed without ever being sent.
         # Delivery/read can happen days later and must never select a new campaign.
-        for ev in db.execute("SELECT * FROM events WHERE kind='status' AND body='sent' AND contact_id IS NULL").fetchall():
+        for ev in db.execute("""SELECT * FROM events WHERE kind='status' AND body IN ('sent','failed')
+                AND contact_id IS NULL ORDER BY ts""").fetchall():
             if not ev['context'] or not 10 <= len(ev['phone'] or '') <= 15:
                 continue
             if db.execute('SELECT 1 FROM outbounds WHERE id=?',(ev['context'],)).fetchone():
@@ -494,6 +496,11 @@ def create_apps(db_path=None, settings=None):
         finally:
             dest.close()
         return send_file(io.BytesIO(content), as_attachment=True, download_name='backup-datafy.sqlite3', mimetype='application/octet-stream')
+
+    # Links events stored before a capture rule changed (e.g. failed sends).
+    with connect() as db:
+        capture_sends(db)
+        link_by_context(db)
 
     return panel, webhook
 
