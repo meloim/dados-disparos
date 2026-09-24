@@ -508,8 +508,15 @@ def create_apps(db_path=None, settings=None):
             evs = by_contact.get(row['id'], [])
             replies = [e for e in evs if e['kind']=='reply']
             statuses = {e['body'] for e in evs if e['kind']=='status'}
+            # Quem respondeu recebeu e leu, mesmo sem a confirmação de leitura
+            # (muita gente desliga os "tiques azuis" e a Meta não manda o status 'read').
+            row['read_inferred'] = bool(replies) and 'read' not in statuses and 'failed' not in statuses
+            if row['read_inferred']:
+                statuses |= {'delivered', 'read'}
             row['status'], row['delivery'] = next(((code,label) for code,label in [('read','Lida'),('delivered','Entregue'),('failed','Falhou'),('sent','Enviada')] if code in statuses), ('none','Não informado'))
             status_ts = [e['ts'] for e in evs if e['kind']=='status' and e['body']==row['status']]
+            if row['read_inferred']:
+                status_ts = [replies[0]['ts']]
             row['status_when'] = date_text(status_ts[-1]) if status_ts else ''
             row['replied'] = bool(replies)
             row['last_ts'] = max((e['ts'] for e in evs), default=0)
@@ -542,9 +549,10 @@ def create_apps(db_path=None, settings=None):
                 AND COALESCE(association,'')<>? ORDER BY ts""",(DISCARDED,)).fetchall()
         people = {}
         for e in events:
-            p = people.setdefault(e['contact_id'], {'send': None, 'delivered': False, 'read': None, 'replies': []})
+            p = people.setdefault(e['contact_id'], {'send': None, 'delivered': False, 'read': None, 'failed': False, 'replies': []})
             if e['kind'] == 'status':
                 p['send'] = e['ts'] if p['send'] is None else min(p['send'], e['ts'])
+                p['failed'] = p['failed'] or e['body'] == 'failed'
                 if e['body'] in ('delivered', 'read'):
                     p['delivered'] = True
                 if e['body'] == 'read' and p['read'] is None:
@@ -562,8 +570,10 @@ def create_apps(db_path=None, settings=None):
             c = per.setdefault(owner[cid], {'name': owner[cid], 'sent': 0, 'delivered': 0, 'read': 0,
                                             'replied': 0, 'accepted': 0, 'last': 0})
             c['sent'] += 1
-            c['delivered'] += p['delivered']
-            c['read'] += bool(p['read'])
+            # Resposta implica entrega e leitura (confirmação de leitura pode estar desligada).
+            answered = bool(p['replies']) and not p['failed']
+            c['delivered'] += p['delivered'] or answered
+            c['read'] += bool(p['read']) or answered
             c['replied'] += bool(p['replies'])
             c['accepted'] += bool(p['replies']) and p['replies'][-1]['result'] == 'aceitou'
             c['last'] = max(c['last'], p['send'])

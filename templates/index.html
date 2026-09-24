@@ -154,7 +154,7 @@
           <span class="avatar">{% if r.name_fmt %}{{ r.name_fmt[:1]|upper }}{% else %}<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12a4.5 4.5 0 10-4.5-4.5A4.5 4.5 0 0012 12zm0 2c-4 0-8 2-8 5v1h16v-1c0-3-4-5-8-5z"/></svg>{% endif %}</span>
           <div>{% if r.name_fmt %}<b>{{ r.name_fmt }}</b><small>{{ r.phone_fmt }}</small>{% else %}<b>{{ r.phone_fmt }}</b>{% endif %}</div>
         </div></td>
-        <td class="c-status">{{ status_cell(r.status, r.delivery, r.status_when[:16], r.fail) }}</td>
+        <td class="c-status">{{ status_cell(r.status, r.delivery, 'pela resposta' if r.read_inferred else r.status_when[:16], r.fail) }}</td>
         <td class="c-reply{{ ' empty-cell' if not r.replied }}">{% if r.replied %}<span class="bubble">{{ r.answer or '—' }}<small>{{ r.when[:16] }}</small></span>{% else %}<span class="muted">—</span>{% endif %}</td>
         {% if show_results %}<td class="c-result{{ ' empty-cell' if not r.replied }}">{% if r.replied %}<span class="badge {{ r.result }}">{{ labels[r.result] }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}
         {% if not campaign %}<td class="c-camp"><small>{{ r.campaign }}</small></td>{% endif %}

@@ -251,6 +251,17 @@ class Integration(unittest.TestCase):
         self.assertIn('Número sem WhatsApp',html)
         self.assertIn('"answered": 1',html)
         self.assertEqual(self.panel.get('/?aba=graficos&periodo=tudo&campanha=B').status_code,200)
+    def test_reply_implies_read_when_receipts_are_off(self):
+        now=int(time.time())
+        self.import_list('Sem tique azul','telefone\n5511911111111\n')
+        # Só "entregue": a pessoa desligou a confirmação de leitura, mas respondeu.
+        self.send(statuses=[self.status_to('wamid.1','5511911111111',now-600),self.status_to('wamid.1','5511911111111',now-590,'delivered')])
+        self.send([self.reply_from('r1','5511911111111',now-300,'Sim')])
+        html=self.panel.get('/?campanha=Sem+tique+azul').get_data(as_text=True)
+        self.assertIn('pela resposta',html)
+        charts=self.panel.get('/?aba=graficos&periodo=7').get_data(as_text=True)
+        self.assertIn('"read_pct": 100.0',charts)
+        self.assertIn('"reads": 0',charts)  # Tempo até ler usa só confirmações reais.
     def test_rules_persist_and_reject_overlap(self):
         self.panel.post('/regras',data={'csrf':self.csrf,'aceite':'YES','recusa':'yes'})
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM preferences'),0)
