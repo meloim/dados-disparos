@@ -194,81 +194,102 @@
   <span class="updated">{{ charts.sent }} disparo(s) no período</span>
 </div>
 
-{% macro few(n, minimum, what) %}{% if n < minimum %}<p class="few">Poucos dados ainda ({{ n }} {{ what }}). O padrão pode mudar bastante com as próximas campanhas.</p>{% endif %}{% endmacro %}
+{% macro few(n, minimum, what) %}{% if n < minimum %}<p class="few">Ainda há poucos dados ({{ n }} {{ what }}). Os números podem mudar bastante nas próximas campanhas.</p>{% endif %}{% endmacro %}
 {% macro empty_chart(text) %}<div class="chart-empty">{{ text }}</div>{% endmacro %}
 {% macro num(v) %}{{ '{:,}'.format(v).replace(',', '.') }}{% endmacro %}
 {% macro pctv(v) %}{% if v is none %}—{% else %}{{ ('%.1f'|format(v)).replace('.', ',') }}%{% endif %}{% endmacro %}
-{% macro ci(c) %}{{ ('%.0f'|format(c[0])) }}–{{ ('%.0f'|format(c[1])) }}%{% endmacro %}
+{% macro ci(c) %}{{ ('%.0f'|format(c[0])) }}% a {{ ('%.0f'|format(c[1])) }}%{% endmacro %}
+{% macro hint(how, action='') %}<div class="hint"><p><b>Como ler:</b> {{ how }}</p>{% if action %}<p class="action"><b>O que fazer:</b> {{ action }}</p>{% endif %}</div>{% endmacro %}
+{% set kpi_help = {
+  'sent': 'Quantas mensagens saíram no período.',
+  'delivered': 'Chegaram no celular da pessoa.',
+  'read': 'A pessoa abriu a mensagem (ou respondeu, o que prova que leu).',
+  'replied': 'A pessoa mandou alguma resposta.',
+  'accepted': 'A resposta foi um “sim” (aceitou / confirmou).'} %}
 
-{# KPIs do período, com variação contra o período anterior de mesmo tamanho. #}
+{# Resumo em números, com comparação ao período anterior. #}
 <div class="kpis">
 {% for k in charts.kpis %}
   <div class="kpi">
     <span class="kpi-label">{{ k.label }}</span>
     <strong>{% if k.unit == 'pct' %}{{ pctv(k.value) }}{% else %}{{ num(k.value) }}{% endif %}</strong>
+    {% if k.unit == 'pct' and k.value is not none %}<small class="per100">{{ '%.0f'|format(k.value) }} de cada 100 enviados</small>{% endif %}
+    <small class="kpi-help">{{ kpi_help[k.key] }}</small>
     {% if k.delta is not none %}
       {% set cls = 'flat' if k.delta == 0 or k.key == 'sent' else ('good' if k.delta > 0 else 'bad') %}
-      <span class="delta {{ cls }}"><span aria-hidden="true">{{ '▲' if k.delta > 0 else '▼' if k.delta < 0 else '■' }}</span> {{ ('%+.1f'|format(k.delta)).replace('.', ',') }}{{ '%' if k.unit == 'count' else ' p.p.' }}</span>
-      <small>vs {{ charts.days }} dias anteriores</small>
-    {% elif charts.days %}<small>sem disparos no período anterior</small>
-    {% else %}<small>todo o histórico</small>{% endif %}
-    {% if k.unit == 'pct' and k.value is not none %}<small class="kpi-n">{{ num(k.n) }} de {{ num(charts.sent) }} enviados</small>{% endif %}
+      <span class="delta {{ cls }}" title="{{ 'Diferença em pontos percentuais (p.p.)' if k.unit == 'pct' else 'Variação em relação ao período anterior' }}"><span aria-hidden="true">{{ '▲' if k.delta > 0 else '▼' if k.delta < 0 else '■' }}</span>
+        {% if k.unit == 'pct' %}{{ ('%.1f'|format(k.delta|abs)).replace('.', ',') }} ponto{{ 's' if (k.delta|abs) != 1 }} {{ 'a mais' if k.delta > 0 else 'a menos' if k.delta < 0 else '' }}{% else %}{{ ('%+.1f'|format(k.delta)).replace('.', ',') }}%{% endif %}</span>
+      <small>que nos {{ charts.days }} dias anteriores</small>
+    {% elif charts.days %}<small class="muted">Sem disparos nos {{ charts.days }} dias anteriores para comparar.</small>{% endif %}
   </div>
 {% endfor %}
 </div>
 
 <div class="charts">
   <section class="card chart-card wide">
-    <h2>Onde o funil perde mais gente?</h2>
-    <p class="headline">{% if charts.leak %}A etapa mais fraca é a de <b>{{ charts.leak.label|lower }}</b>: {{ pctv(charts.leak.rate) }} ({{ charts.leak.desc }}; IC 95%: {{ ci(charts.leak.ci) }}).{% else %}Nenhum disparo no período.{% endif %}</p>
+    <h2>Onde estamos perdendo gente?</h2>
+    {% set p = charts.per100 %}
+    <p class="headline">{% if charts.sent %}De cada <b>100 mensagens enviadas</b>, {{ p.delivered }} chegaram, {{ p.read }} foram lidas e <b>{{ p.replied }} tiveram resposta</b>{% if 'accepted' in p and charts.step_labels|length > 3 %}, sendo {{ p.accepted }} um “sim”{% endif %}.
+      {% if charts.leak %}A maior perda está na <b>{{ charts.leak.label|lower }}</b>: só {{ pctv(charts.leak.rate) }} passam dessa etapa.{% endif %}{% else %}Nenhum disparo no período.{% endif %}</p>
     {% if charts.compare %}
+    {{ hint('cada quadro mostra quantas pessoas passam de uma etapa para a seguinte. Nos gráficos abaixo, cada bolinha é uma campanha e o traço é a faixa onde o número real provavelmente está: quanto mais longo o traço, menos certeza. Bolinha vazada = poucos envios, o número ainda pode mudar muito.',
+            {'Entrega': 'se a entrega está baixa, a lista tem números errados ou sem WhatsApp. Vale limpar a base.',
+             'Leitura': 'se a leitura está baixa, a pessoa não abre a mensagem. Teste outro horário ou uma primeira frase mais chamativa.',
+             'Resposta': 'se a resposta está baixa, a pessoa lê mas não responde. Deixe o pedido mais claro ou use botões de resposta rápida.'}.get(charts.leak.label if charts.leak else '', '')) }}
     <div class="steps">
       {% for s in charts.overall %}
-      <div class="step"><span>{{ s.label }}</span><strong>{{ pctv(s.rate) }}</strong><small>{{ s.desc }}</small><small>{{ num(s.k) }} de {{ num(s.n) }}</small></div>
+      <div class="step {{ 'weak' if charts.leak and s.label == charts.leak.label }}"><span>{{ s.label }}</span><strong>{{ pctv(s.rate) }}</strong><small>{{ s.desc }}</small><small>{{ num(s.k) }} de {{ num(s.n) }}</small></div>
       {% if not loop.last %}<span class="step-arrow" aria-hidden="true">›</span>{% endif %}
       {% endfor %}
     </div>
     <div class="legend">
-      <span><i class="kdot"></i>Taxa da etapa</span>
-      <span><i class="kwhisker"></i>Intervalo de confiança de 95%</span>
-      <span><i class="kdot hollow"></i>Base com menos de {{ charts.min_sample }}: pouco confiável</span>
+      <span><i class="kdot"></i>Resultado da campanha</span>
+      <span><i class="kwhisker"></i>Faixa provável <span class="muted">(intervalo de confiança de 95%)</span></span>
+      <span><i class="kdot hollow"></i>Menos de {{ charts.min_sample }} envios: número instável</span>
     </div>
     <div class="chart" data-chart="funnel"></div>
     <details class="table-view"><summary>Ver números</summary><div class="scroll"><table>
       <thead><tr><th>Campanha</th><th>Enviados</th>{% for label in charts.step_labels %}<th>{{ label }}</th>{% endfor %}</tr></thead>
-      <tbody>{% for c in charts.compare %}<tr><td>{{ c.name }}</td><td>{{ c.sent }}</td>{% for s in c.steps %}<td>{{ s.k }}/{{ s.n }} · {{ pctv(s.rate) }}{% if s.n %} <small class="muted">[{{ ci(s.ci) }}]</small>{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody>
+      <tbody>{% for c in charts.compare %}<tr><td>{{ c.name }}</td><td>{{ c.sent }}</td>{% for s in c.steps %}<td>{{ s.k }} de {{ s.n }} · {{ pctv(s.rate) }}{% if s.n %} <small class="muted">(faixa: {{ ci(s.ci) }})</small>{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody>
     </table></div></details>
     {% else %}{{ empty_chart('Sem disparos no período escolhido.') }}{% endif %}
   </section>
 
   <section class="card chart-card">
     <h2>Quanto tempo esperar antes de cobrar quem não respondeu?</h2>
-    <p class="headline">{% if charts.answered %}Em 1 h já tinham chegado <b>{{ charts.share_1h }}%</b> das respostas; em 24 h, <b>{{ charts.share_24h }}%</b>. Taxa final: <b>{{ pctv(charts.final_reply) }}</b> dos enviados.{% else %}Ainda sem respostas no período.{% endif %}</p>
+    <p class="headline">{% if charts.answered %}{% if charts.t90 %}Depois de <b>{{ charts.t90 }}</b> quase ninguém mais responde: até ali já tinham chegado 9 de cada 10 respostas.{% endif %} No fim, <b>{{ pctv(charts.final_reply) }}</b> dos enviados responderam.{% else %}Ainda sem respostas no período.{% endif %}</p>
     {{ few(charts.answered, 20, 'respostas') }}
     {% if charts.sent %}
-    <div class="legend"><span><i class="k c2"></i>Responderam</span><span><i class="k c1"></i>Leitura confirmada</span><span class="muted">% dos enviados, acumulado</span></div>
+    {{ hint('siga a linha laranja da esquerda para a direita. Ela mostra quanto dos enviados já tinha respondido 5 minutos, 1 hora, 1 dia... depois do disparo. Quando a linha fica reta, as respostas pararam de chegar.',
+            ('mande a cobrança para quem não respondeu depois de ' ~ charts.t90 ~ '. Antes disso, ainda vale esperar.') if charts.t90 else '') }}
+    <div class="legend"><span><i class="k c2"></i>Responderam</span><span><i class="k c1"></i>Leram (confirmado)</span><span class="muted">% dos enviados, somando ao longo do tempo</span></div>
     <div class="chart" data-chart="curve"></div>
-    <p class="note">A leitura confirmada fica abaixo do real: quem desliga os tiques azuis não envia confirmação.</p>
+    <p class="note">A linha azul fica abaixo do real: quem desliga os tiques azuis do WhatsApp não envia a confirmação de leitura.</p>
     <details class="table-view"><summary>Ver números</summary><div class="scroll"><table>
-      <thead><tr><th>Até</th><th>Responderam</th><th>Leitura confirmada</th></tr></thead>
-      <tbody>{% for m in charts.curve_minutes %}{% if m in [5, 15, 60, 180, 360, 720, 1440, 4320, 10080] %}<tr><td>{{ m }} min{% if m >= 60 %} ({{ m // 60 }} h){% endif %}</td><td>{{ pctv(charts.reply_curve[loop.index0]) }}</td><td>{{ pctv(charts.read_curve[loop.index0]) }}</td></tr>{% endif %}{% endfor %}</tbody>
+      <thead><tr><th>Depois de</th><th>Já responderam</th><th>Já leram (confirmado)</th></tr></thead>
+      <tbody>{% for m in charts.curve_minutes %}{% if m in [5, 15, 60, 180, 360, 720, 1440, 4320, 10080] %}<tr><td>{% if m < 60 %}{{ m }} min{% elif m < 1440 %}{{ m // 60 }} h{% else %}{{ m // 1440 }} dia{{ 's' if m >= 2880 }}{% endif %}</td><td>{{ pctv(charts.reply_curve[loop.index0]) }}</td><td>{{ pctv(charts.read_curve[loop.index0]) }}</td></tr>{% endif %}{% endfor %}</tbody>
     </table></div></details>
     {% else %}{{ empty_chart('Sem disparos no período escolhido.') }}{% endif %}
   </section>
 
   <section class="card chart-card">
     <h2>Qual o melhor horário para disparar?</h2>
-    <p class="headline">{% if charts.best_hour %}Maior taxa de resposta nos disparos às <b>{{ charts.best_hour.hour }}h</b>: {{ pctv(charts.best_hour.rate) }} (n = {{ charts.best_hour.n }}; IC 95%: {{ ci(charts.best_hour.ci) }}). Horário de Brasília.{% else %}Ainda não dá para comparar horários: é preciso disparar em pelo menos 3 horários diferentes, com 10 ou mais envios em cada. Hoje: {{ charts.comparable_hours }} horário(s).{% endif %}</p>
+    <p class="headline">{% if charts.best_hour %}Os disparos das <b>{{ charts.best_hour.hour }}h</b> tiveram mais resposta: {{ pctv(charts.best_hour.rate) }} ({{ charts.best_hour.k }} de {{ charts.best_hour.n }}). Horário de Brasília.{% else %}Ainda não dá para saber. Até agora os disparos foram feitos em {{ charts.comparable_hours }} horário(s) com envios suficientes; é preciso pelo menos 3 para comparar.{% endif %}</p>
     {% if charts.sent %}
-    <div class="legend"><span><i class="k c1"></i>Taxa de resposta por horário do disparo</span><span><i class="kwhisker"></i>IC 95%</span><span class="muted">Horários com menos de 10 envios ficam apagados</span></div>
+    {{ hint('cada barra é a % de pessoas que responderam quando a mensagem foi enviada naquele horário. O tracinho em cima mostra a faixa provável. Barras apagadas têm menos de 10 envios e ainda não servem para comparar.',
+            'para descobrir o melhor horário, divida as próximas campanhas em horários diferentes (por exemplo 9h, 14h e 18h), com pelo menos 10 envios em cada.' if not charts.best_hour else 'teste disparar mais vezes nesse horário e acompanhe se a taxa se mantém.') }}
+    <div class="legend"><span><i class="k c1"></i>% que respondeu, por horário do envio</span><span><i class="kwhisker"></i>Faixa provável</span></div>
     <div class="chart" data-chart="hours"></div>
     {% else %}{{ empty_chart('Sem disparos no período escolhido.') }}{% endif %}
   </section>
 
   <section class="card chart-card wide">
     <h2>Por que os envios falharam?</h2>
-    <p class="headline">{% if charts.failures %}<b>{{ pctv(charts.failed_pct) }}</b> dos envios falharam. Principal motivo: <b>{{ charts.failures[0].reason }}</b> ({{ charts.failures[0].n }} de {{ charts.failed }}).{% else %}Nenhuma falha no período. 👌{% endif %}</p>
-    {% if charts.failures %}<div class="chart" data-chart="failures"></div>{% endif %}
+    <p class="headline">{% if charts.failures %}<b>{{ pctv(charts.failed_pct) }}</b> dos envios falharam (de cada 100, cerca de {{ '%.0f'|format(charts.failed_pct) }} não chegaram). O motivo mais comum: <b>{{ charts.failures[0].reason }}</b> ({{ charts.failures[0].n }} de {{ charts.failed }}).{% else %}Nenhuma falha no período. 👌{% endif %}</p>
+    {% if charts.failures %}
+    {{ hint('cada barra é um motivo de falha informado pelo WhatsApp. O número na ponta é a quantidade e a % dos envios do período.', charts.top_fail_tip) }}
+    <div class="chart" data-chart="failures"></div>
+    {% endif %}
   </section>
 </div>
 <script type="application/json" id="chart-data">{{ charts|tojson }}</script>

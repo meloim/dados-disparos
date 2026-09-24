@@ -110,6 +110,9 @@ FAIL_TIPS = {
     131000: 'Tente enviar de novo mais tarde.',
 }
 
+# Sugestão a partir do texto do motivo (os gráficos agrupam por motivo, não por código).
+REASON_TIPS = {FAIL_REASONS[code]: tip for code, tip in FAIL_TIPS.items() if code in FAIL_REASONS}
+
 def fail_info(raw):
     """Motivo, sugestão e detalhe técnico de um status 'failed'."""
     try:
@@ -192,7 +195,8 @@ def duration_text(seconds):
     hours = seconds / 3600
     if hours < 24:
         return f'{hours:.1f} h'.replace('.0 h', ' h').replace('.', ',')
-    return f'{hours / 24:.1f} dias'.replace('.0 dias', ' dias').replace('.', ',')
+    days = f'{hours / 24:.1f}'.replace('.0', '').replace('.', ',')
+    return f'{days} dia' + ('' if days == '1' else 's')
 
 def wilson(k, n, z=1.96):
     """Intervalo de confiança de 95% (Wilson) para uma proporção, em %."""
@@ -644,6 +648,8 @@ def create_apps(db_path=None, settings=None):
         reply_curve = curve(reply_delays)
         final_reply = rate(len(reply_delays), n_sent) or 0
         share = lambda minutes: round(sum(d <= minutes * 60 for d in reply_delays) * 100 / len(reply_delays)) if reply_delays else 0
+        # Momento em que já chegaram 90% das respostas: dali em diante quase ninguém mais responde.
+        t90 = next((m for m in CURVE_MINUTES if reply_delays and sum(d <= m * 60 for d in reply_delays) >= 0.9 * len(reply_delays)), None)
 
         # 4. Taxa de resposta por horário do disparo (Brasília). Só compara horários com amostra.
         by_hour = {}
@@ -681,6 +687,9 @@ def create_apps(db_path=None, settings=None):
             'curve_minutes': CURVE_MINUTES, 'reply_curve': reply_curve, 'read_curve': curve(read_delays),
             'final_reply': final_reply, 'reads': len(read_delays), 'answered': len(reply_delays),
             'share_1h': share(60), 'share_24h': share(1440), 'median_reply': duration_text(median(reply_delays)),
+            't90': duration_text(t90 * 60) if t90 else '',
+            'per100': {k['key']: round(k['value']) for k in kpis if k['unit'] == 'pct' and k['value'] is not None},
+            'top_fail_tip': REASON_TIPS.get(ranked[0][0], '') if ranked else '',
             'hours': hours, 'comparable_hours': len(comparable), 'best_hour': best_hour,
             'failures': [{'reason': r, 'n': n, 'pct': rate(n, base)} for r, n in ranked],
             'failed': sum(reasons.values()), 'failed_pct': rate(sum(reasons.values()), base) or 0,

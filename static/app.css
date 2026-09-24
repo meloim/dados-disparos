@@ -177,6 +177,16 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:10px 20px 30p
 .kdot.hollow{background:transparent;border:2px solid var(--series-1)}
 .kwhisker{width:18px;height:2px;background:var(--series-1);opacity:.45;display:inline-block;position:relative}
 .note{font-size:12px;color:var(--muted);margin:6px 0 0}
+/* Explicação em linguagem simples em cada gráfico. */
+.hint{background:var(--surface-2);border-left:3px solid var(--wa-teal);border-radius:0 10px 10px 0;padding:10px 12px;margin:-4px 0 14px;font-size:13px;line-height:1.45}
+.hint p{margin:0}
+.hint p+p{margin-top:6px}
+.hint .action{color:var(--text)}
+.hint b{color:var(--text)}
+.kpi .per100{color:var(--text);font-weight:600}
+.kpi .kpi-help{margin:2px 0 6px;line-height:1.35}
+.step.weak{outline:2px solid var(--danger);outline-offset:-2px}
+.step.weak span{color:var(--danger)}
 
 /* KPIs com variação contra o período anterior. */
 .kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:18px}

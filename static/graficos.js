@@ -20,7 +20,7 @@
     return el('svg', {viewBox: '0 0 ' + w + ' ' + h, width: w, height: h, role: 'img'}, box);
   }
   function pct(x) { return x == null ? '—' : (Math.round(x * 10) / 10).toString().replace('.', ',') + '%'; }
-  function ci(c) { return Math.round(c[0]) + '–' + Math.round(c[1]) + '%'; }
+  function ci(c) { return Math.round(c[0]) + '% a ' + Math.round(c[1]) + '%'; }
   // Barra com a ponta de dados arredondada (4px) e a base reta.
   function hbar(g, x, y, w, h, color) {
     if (w <= 0) return el('rect', {x: x, y: y, width: 0, height: h}, g);
@@ -95,9 +95,9 @@
         el('circle', {cx: x(st.rate), cy: cy, r: 5, style: st.small ? 'fill:var(--surface);stroke:' + color + ';stroke-width:2' : 'fill:' + color + ';stroke:var(--surface);stroke-width:2'}, g);
         var hit = el('rect', {x: px - 4, y: cy - rowH / 2, width: panelW + 8, height: rowH, style: 'fill:transparent'}, g);
         tip(hit, c.name + ' · ' + label, [
-          [color, 'Taxa: ' + pct(st.rate) + ' (' + st.k + ' de ' + st.n + ')'],
-          ['', 'IC 95%: ' + ci(st.ci)]
-        ].concat(st.small ? [['', 'Base pequena: taxa pouco confiável']] : []));
+          [color, 'Passaram: ' + pct(st.rate) + ' (' + st.k + ' de ' + st.n + ')'],
+          ['', 'Faixa provável: ' + ci(st.ci)]
+        ].concat(st.small ? [['', 'Poucos envios: número instável']] : []));
       });
     });
   }
@@ -162,7 +162,7 @@
         el('line', {x1: cx - 3, x2: cx + 3, y1: y(h.ci[0]), y2: y(h.ci[0]), style: 'stroke:var(--text);opacity:.55', 'stroke-width': 1.5}, g);
       }
       var hit = el('rect', {x: left + band * i, y: top, width: band, height: base - top, style: 'fill:transparent'}, g);
-      tip(hit, 'Disparos às ' + i + 'h', [[color, 'Responderam: ' + pct(h.rate) + ' (' + h.k + ' de ' + h.n + ')'], ['', 'IC 95%: ' + ci(h.ci)]]
+      tip(hit, 'Disparos às ' + i + 'h', [[color, 'Responderam: ' + pct(h.rate) + ' (' + h.k + ' de ' + h.n + ')'], ['', 'Faixa provável: ' + ci(h.ci)]]
         .concat(weak ? [['', 'Menos de 10 envios: não dá para comparar']] : []));
     });
   }
