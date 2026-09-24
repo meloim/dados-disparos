@@ -173,9 +173,30 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:10px 20px 30p
 .legend .k{width:10px;height:10px;border-radius:3px;display:inline-block}
 .k1{background:var(--stage-1)}.k2{background:var(--stage-2)}.k3{background:var(--stage-3)}.k4{background:var(--stage-4)}
 .c1{background:var(--series-1)}.c2{background:var(--series-2)}
-.heat-scale{margin:8px 0 0}
-.ramp{width:120px;height:10px;border-radius:3px;background:linear-gradient(90deg,#cde2fb,#86b6ef,#3987e5,#1c5cab,#0d366b)}
-@media (prefers-color-scheme:dark){.ramp{background:linear-gradient(90deg,#184f95,#2a78d6,#5598e7,#9ec5f4,#cde2fb)}}
+.kdot{width:10px;height:10px;border-radius:50%;background:var(--series-1);display:inline-block}
+.kdot.hollow{background:transparent;border:2px solid var(--series-1)}
+.kwhisker{width:18px;height:2px;background:var(--series-1);opacity:.45;display:inline-block;position:relative}
+.note{font-size:12px;color:var(--muted);margin:6px 0 0}
+
+/* KPIs com variação contra o período anterior. */
+.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:18px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:2px}
+.kpi-label{font-size:13px;color:var(--muted);font-weight:600}
+.kpi strong{font-size:28px;line-height:1.15;margin:4px 0 2px}
+.kpi small{font-size:12px;color:var(--muted)}
+.kpi .kpi-n{margin-top:4px}
+.delta{font-size:13px;font-weight:700}
+.delta.good{color:var(--ok)}.delta.bad{color:var(--danger)}.delta.flat{color:var(--muted)}
+
+/* Funil geral: taxa de cada etapa lado a lado. */
+.steps{display:flex;align-items:stretch;gap:6px;margin:0 0 16px;flex-wrap:wrap}
+.step{flex:1 1 140px;background:var(--surface-2);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column}
+.step span{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+.step strong{font-size:22px;margin:2px 0}
+.step small{font-size:12px;color:var(--muted)}
+.step-arrow{align-self:center;color:var(--muted);font-size:22px}
+@media (max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.kpis .kpi:first-child{grid-column:1/-1}}
+@media (max-width:640px){.step-arrow{display:none}.step{flex:1 1 calc(50% - 6px)}.kpi strong{font-size:24px}.kpis{gap:8px;margin-bottom:12px}}
 .chart{width:100%;position:relative}
 .chart svg{display:block;width:100%;height:auto;overflow:visible}
 .chart text{font-family:inherit;fill:var(--muted);font-size:12px}

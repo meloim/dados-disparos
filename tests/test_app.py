@@ -247,10 +247,17 @@ class Integration(unittest.TestCase):
                             self.status_to('wamid.2','5511922222222',now-600),failed])
         self.send([self.reply_from('r1','5511911111111',now-400,'Sim')])
         html=self.panel.get('/?aba=graficos&periodo=7').get_data(as_text=True)
-        self.assertIn('Maior taxa de resposta',html)
+        self.assertIn('A etapa mais fraca',html)
         self.assertIn('Número sem WhatsApp',html)
         self.assertIn('"answered": 1',html)
+        self.assertIn('Taxa de resposta',html)
         self.assertEqual(self.panel.get('/?aba=graficos&periodo=tudo&campanha=B').status_code,200)
+    def test_wilson_interval(self):
+        from app import wilson
+        self.assertEqual(wilson(0,0),[0.0,0.0])
+        low,high=wilson(5,10)
+        self.assertTrue(low<50<high and 18<low<25 and 75<high<82)
+        self.assertEqual(wilson(10,10)[1],100.0)
     def test_reply_implies_read_when_receipts_are_off(self):
         now=int(time.time())
         self.import_list('Sem tique azul','telefone\n5511911111111\n')
@@ -260,8 +267,8 @@ class Integration(unittest.TestCase):
         html=self.panel.get('/?campanha=Sem+tique+azul').get_data(as_text=True)
         self.assertIn('pela resposta',html)
         charts=self.panel.get('/?aba=graficos&periodo=7').get_data(as_text=True)
-        self.assertIn('"read_pct": 100.0',charts)
-        self.assertIn('"reads": 0',charts)  # Tempo até ler usa só confirmações reais.
+        self.assertIn('"label": "Taxa de leitura", "n": 1',charts.replace('"key": "read", ',''))
+        self.assertIn('"reads": 0',charts)  # Curva de leitura usa só confirmações reais.
     def test_rules_persist_and_reject_overlap(self):
         self.panel.post('/regras',data={'csrf':self.csrf,'aceite':'YES','recusa':'yes'})
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM preferences'),0)

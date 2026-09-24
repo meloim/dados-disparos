@@ -5,7 +5,6 @@
   if (!source) return;
   var data = JSON.parse(source.textContent);
   var NS = 'http://www.w3.org/2000/svg';
-  var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
   var css = getComputedStyle(document.documentElement);
   function v(name) { return css.getPropertyValue(name).trim(); }
 
@@ -20,7 +19,8 @@
     box.textContent = '';
     return el('svg', {viewBox: '0 0 ' + w + ' ' + h, width: w, height: h, role: 'img'}, box);
   }
-  function pct(x) { return (Math.round(x * 10) / 10).toString().replace('.', ',') + '%'; }
+  function pct(x) { return x == null ? '—' : (Math.round(x * 10) / 10).toString().replace('.', ',') + '%'; }
+  function ci(c) { return Math.round(c[0]) + '–' + Math.round(c[1]) + '%'; }
   // Barra com a ponta de dados arredondada (4px) e a base reta.
   function hbar(g, x, y, w, h, color) {
     if (w <= 0) return el('rect', {x: x, y: y, width: 0, height: h}, g);
@@ -28,11 +28,12 @@
     return el('path', {d: 'M' + x + ',' + y + 'h' + (w - r) + 'a' + r + ',' + r + ' 0 0 1 ' + r + ',' + r +
       'v' + (h - 2 * r) + 'a' + r + ',' + r + ' 0 0 1 ' + (-r) + ',' + r + 'h' + (r - w) + 'z', style: 'fill:' + color}, g);
   }
-  function vbar(g, x, base, w, h, color) {
+  function vbar(g, x, base, w, h, color, opacity) {
     if (h <= 0) return null;
     var r = Math.min(4, w / 2, h);
     return el('path', {d: 'M' + x + ',' + base + 'v' + (r - h) + 'a' + r + ',' + r + ' 0 0 1 ' + r + ',' + (-r) +
-      'h' + (w - 2 * r) + 'a' + r + ',' + r + ' 0 0 1 ' + r + ',' + r + 'v' + (h - r) + 'z', style: 'fill:' + color}, g);
+      'h' + (w - 2 * r) + 'a' + r + ',' + r + ' 0 0 1 ' + r + ',' + r + 'v' + (h - r) + 'z',
+      style: 'fill:' + color + (opacity ? ';opacity:' + opacity : '')}, g);
   }
   function fit(text, px) {  // Corta com reticências para caber em px (estimativa de ~7px por letra).
     var max = Math.max(4, Math.floor(px / 7));
@@ -55,97 +56,121 @@
     node.setAttribute('data-tip', title);
     node.setAttribute('data-tip-lines', JSON.stringify(lines));
   }
-
-  // 1. Comparativo entre campanhas: barras horizontais agrupadas, % dos enviados.
-  function drawCompare(box) {
-    var rows = data.compare, W = box.clientWidth;
-    var series = [['delivered', 'Entregues', v('--stage-1')], ['read', 'Lidas', v('--stage-2')],
-                  ['replied', 'Responderam', v('--stage-3')]];
-    if (data.show_accepted) series.push(['accepted', 'Aceitaram', v('--stage-4')]);
-    var thick = 8, gap = 2, bars = series.length * thick + (series.length - 1) * gap, rowGap = 20;
-    // Tela estreita: nome da campanha em cima das barras, na largura toda.
-    var stacked = W < 480, head = stacked ? 20 : 0, groupH = head + bars;
-    var labelW = stacked ? 0 : Math.min(220, Math.max(110, W * 0.26)), x0 = stacked ? 0 : labelW + 12, x1 = W - 44, top = 6;
-    var H = top + rows.length * (groupH + rowGap) + 16;
-    var s = svg(box, W, H), g = el('g', {}, s);
-    [0, 25, 50, 75, 100].forEach(function (t) {
-      var x = x0 + (x1 - x0) * t / 100;
-      el('line', {x1: x, x2: x, y1: top - 4, y2: H - 20, style: 'stroke:var(--grid)', 'stroke-width': 1}, g);
-      el('text', {x: x, y: H - 4, 'text-anchor': 'middle'}, g, t + '%');
-    });
-    rows.forEach(function (c, i) {
-      var y = top + i * (groupH + rowGap);
-      var name = stacked
-        ? el('text', {x: 0, y: y + 13, class: 'lbl'}, g, fit(c.name, W))
-        : el('text', {x: labelW, y: y + groupH / 2 + 4, 'text-anchor': 'end', class: 'lbl'}, g, fit(c.name, labelW));
-      el('title', {}, name, c.name + ' · ' + c.sent + ' enviados');
-      series.forEach(function (sr, j) {
-        var yy = y + head + j * (thick + gap), value = c[sr[0] + '_pct'];
-        hbar(g, x0, yy, (x1 - x0) * value / 100, thick, sr[2]);
-        if (sr[0] === 'replied') el('text', {x: x0 + (x1 - x0) * value / 100 + 6, y: yy + thick - 0.5, class: 'val'}, g, pct(value));
-      });
-      var hit = el('rect', {x: 0, y: y - rowGap / 2, width: W, height: groupH + rowGap, style: 'fill:transparent'}, g);
-      tip(hit, c.name, [['', c.sent + ' enviados']].concat(series.map(function (sr) {
-        return [sr[2], sr[1] + ': ' + c[sr[0]] + ' (' + pct(c[sr[0] + '_pct']) + ')'];
-      })));
-    });
-  }
-
-  // 2. Tempo até ler/responder: colunas agrupadas por faixa de tempo.
   function niceMax(m) {
-    var steps = [10, 20, 25, 40, 50, 60, 80, 100];
+    var steps = [5, 10, 20, 25, 40, 50, 60, 80, 100];
     for (var i = 0; i < steps.length; i++) if (m <= steps[i]) return steps[i];
     return 100;
   }
-  function drawDelays(box) {
-    var W = box.clientWidth, H = 250, left = 38, right = 8, top = 10, base = H - 42;
-    var labels = data.buckets, n = labels.length, band = (W - left - right) / n;
-    var bw = Math.max(4, Math.min(24, (band - 14) / 2)), max = niceMax(Math.max.apply(null, data.read_pct.concat(data.reply_pct, [1])));
-    var s = svg(box, W, H), g = el('g', {}, s), y = function (p) { return base - (base - top) * p / max; };
-    for (var t = 0; t <= max; t += max / 4) {
-      el('line', {x1: left, x2: W - right, y1: y(t), y2: y(t), style: 'stroke:' + (t ? 'var(--grid)' : 'var(--axis)'), 'stroke-width': 1}, g);
-      el('text', {x: left - 6, y: y(t) + 4, 'text-anchor': 'end'}, g, Math.round(t) + '%');
+  function gridY(g, x0, x1, y, max) {
+    var ticks = max % 4 === 0 && max >= 20 ? 4 : 5;  // Marcas sempre em números redondos.
+    for (var t = 0; t <= ticks; t++) {
+      var val = max * t / ticks, yy = y(val);
+      el('line', {x1: x0, x2: x1, y1: yy, y2: yy, style: 'stroke:' + (t ? 'var(--grid)' : 'var(--axis)'), 'stroke-width': 1}, g);
+      el('text', {x: x0 - 6, y: yy + 4, 'text-anchor': 'end'}, g, Math.round(val) + '%');
     }
-    labels.forEach(function (label, i) {
-      var cx = left + band * i + band / 2;
-      vbar(g, cx - bw - 1, base, bw, base - y(data.read_pct[i]), v('--series-1'));
-      vbar(g, cx + 1, base, bw, base - y(data.reply_pct[i]), v('--series-2'));
-      var parts = band < 70 && label.lastIndexOf(' ') > 0 ? [label.slice(0, label.lastIndexOf(' ')), label.slice(label.lastIndexOf(' ') + 1)] : [label];
-      parts.forEach(function (p, k) { el('text', {x: cx, y: base + 16 + k * 13, 'text-anchor': 'middle'}, g, p); });
-      var hit = el('rect', {x: left + band * i, y: top, width: band, height: base - top, style: 'fill:transparent'}, g);
-      tip(hit, label + ' depois do disparo', [
-        [v('--series-1'), 'Leituras: ' + data.read_n[i] + ' (' + pct(data.read_pct[i]) + ')'],
-        [v('--series-2'), 'Respostas: ' + data.reply_n[i] + ' (' + pct(data.reply_pct[i]) + ')']]);
+  }
+
+  // 1. Funil etapa a etapa: ponto = taxa da etapa, traço = IC 95% (small multiples por etapa).
+  function drawFunnel(box) {
+    var rows = data.compare, labels = data.step_labels, S = labels.length, W = box.clientWidth;
+    var cols = W < 560 ? 1 : S, gap = 18, rowH = 26, head = 22, foot = 22;
+    var labelW = cols === 1 ? Math.min(140, W * 0.34) : Math.min(200, Math.max(110, W * 0.18));
+    var panelW = (W - labelW - 12 - (cols - 1) * gap) / cols;
+    var blockH = head + rows.length * rowH + foot, H = (cols === 1 ? S : 1) * blockH + (cols === 1 ? (S - 1) * 12 : 0);
+    var s = svg(box, W, H), g = el('g', {}, s), color = v('--series-1');
+    labels.forEach(function (label, j) {
+      var px = labelW + 12 + (cols === 1 ? 0 : j * (panelW + gap)), py = cols === 1 ? j * (blockH + 12) : 0;
+      var x = function (p) { return px + panelW * p / 100; };
+      var title = label + ' · ' + data.step_desc[j];
+      el('text', {x: px, y: py + 13, class: 'lbl', 'font-weight': 600}, g, title.length * 7 < panelW ? title : fit(label, panelW));
+      [0, 50, 100].forEach(function (t) {
+        el('line', {x1: x(t), x2: x(t), y1: py + head - 4, y2: py + blockH - foot + 2, style: 'stroke:' + (t ? 'var(--grid)' : 'var(--axis)'), 'stroke-width': 1}, g);
+        el('text', {x: x(t), y: py + blockH - 6, 'text-anchor': t === 0 ? 'start' : t === 100 ? 'end' : 'middle'}, g, t + '%');
+      });
+      rows.forEach(function (c, i) {
+        var cy = py + head + i * rowH + rowH / 2, st = c.steps[j];
+        if (cols === 1 || j === 0) el('text', {x: labelW, y: cy + 4, 'text-anchor': 'end', class: 'lbl'}, g, fit(c.name, labelW));
+        if (!st.n) { el('text', {x: px + 4, y: cy + 4}, g, 'sem base'); return; }
+        el('line', {x1: x(st.ci[0]), x2: x(st.ci[1]), y1: cy, y2: cy, style: 'stroke:' + color + ';opacity:.45', 'stroke-width': 2, 'stroke-linecap': 'round'}, g);
+        el('circle', {cx: x(st.rate), cy: cy, r: 5, style: st.small ? 'fill:var(--surface);stroke:' + color + ';stroke-width:2' : 'fill:' + color + ';stroke:var(--surface);stroke-width:2'}, g);
+        var hit = el('rect', {x: px - 4, y: cy - rowH / 2, width: panelW + 8, height: rowH, style: 'fill:transparent'}, g);
+        tip(hit, c.name + ' · ' + label, [
+          [color, 'Taxa: ' + pct(st.rate) + ' (' + st.k + ' de ' + st.n + ')'],
+          ['', 'IC 95%: ' + ci(st.ci)]
+        ].concat(st.small ? [['', 'Base pequena: taxa pouco confiável']] : []));
+      });
     });
   }
 
-  // 3. Mapa de calor: dia da semana × hora das respostas.
-  var RAMP = dark ? ['#184f95', '#1c5cab', '#2a78d6', '#5598e7', '#86b6ef', '#b7d3f6', '#cde2fb']
-                  : ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95', '#0d366b'];
-  function drawHeat(box) {
-    var W = box.clientWidth, left = 34, gap = 2;
-    var cell = Math.max(6, (W - left) / 24 - gap), ch = Math.min(22, Math.max(12, cell)), H = 7 * (ch + gap) + 22;
+  // 2. Curva acumulada: % dos enviados que já respondeu / teve leitura confirmada até t (escala log).
+  function drawCurve(box) {
+    var W = box.clientWidth, H = 250, left = 40, right = 54, top = 10, base = H - 30;
+    var mins = data.curve_minutes, lo = Math.log(mins[0]), hi = Math.log(mins[mins.length - 1]);
+    var max = niceMax(Math.max(Math.max.apply(null, data.reply_curve), Math.max.apply(null, data.read_curve), 1) * 1.1);
+    var x = function (m) { return left + (W - left - right) * (Math.log(m) - lo) / (hi - lo); };
+    var y = function (p) { return base - (base - top) * p / max; };
     var s = svg(box, W, H), g = el('g', {}, s);
-    var max = Math.max.apply(null, [].concat.apply([1], data.heat));
-    data.weekdays.forEach(function (d, r) {
-      var y = r * (ch + gap);
-      el('text', {x: 0, y: y + ch / 2 + 4}, g, d);
-      for (var h = 0; h < 24; h++) {
-        var n = data.heat[r][h], x = left + h * (cell + gap);
-        var color = n ? RAMP[Math.min(RAMP.length - 1, Math.ceil(n / max * RAMP.length) - 1)] : 'var(--surface-2)';
-        var rect = el('rect', {x: x, y: y, width: cell, height: ch, rx: 3, style: 'fill:' + color}, g);
-        tip(rect, d + ', ' + h + 'h–' + (h + 1) + 'h', [['', n + ' resposta' + (n === 1 ? '' : 's')]]);
-      }
+    gridY(g, left, W - right, y, max);
+    var ticks = W < 480 ? [[1, '1 min'], [60, '1 h'], [1440, '1 dia'], [10080, '7 dias']]
+      : [[1, '1 min'], [5, '5 min'], [15, '15 min'], [60, '1 h'], [360, '6 h'], [1440, '1 dia'], [4320, '3 dias'], [10080, '7 dias']];
+    ticks.forEach(function (t) { el('text', {x: x(t[0]), y: H - 8, 'text-anchor': 'middle'}, g, t[1]); });
+    var series = [[data.read_curve, v('--series-1'), 'Leitura confirmada'], [data.reply_curve, v('--series-2'), 'Responderam']];
+    series.forEach(function (sr) {
+      var d = sr[0].map(function (p, i) { return (i ? 'L' : 'M') + x(mins[i]) + ',' + y(p); }).join('');
+      el('path', {d: d, style: 'fill:none;stroke:' + sr[1], 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, g);
+      var last = sr[0][sr[0].length - 1];
+      el('circle', {cx: x(mins[mins.length - 1]), cy: y(last), r: 4, style: 'fill:' + sr[1] + ';stroke:var(--surface);stroke-width:2'}, g);
+      el('text', {x: x(mins[mins.length - 1]) + 8, y: y(last) + 4, class: 'val'}, g, pct(last));
     });
-    for (var hr = 0; hr < 24; hr += 3) {
-      el('text', {x: left + hr * (cell + gap) + cell / 2, y: H - 4, 'text-anchor': 'middle'}, g, hr + 'h');
-    }
+    // Linha-guia com os valores do ponto mais próximo do mouse.
+    var guide = el('line', {x1: 0, x2: 0, y1: top, y2: base, style: 'stroke:var(--axis);visibility:hidden', 'stroke-width': 1}, g);
+    var dots = series.map(function (sr) { return el('circle', {r: 4, style: 'visibility:hidden;fill:' + sr[1] + ';stroke:var(--surface);stroke-width:2'}, g); });
+    var hit = el('rect', {x: left, y: top, width: W - left - right, height: base - top, style: 'fill:transparent'}, g);
+    tip(hit, '', []);
+    hit.addEventListener('pointermove', function (e) {
+      var r = s.getBoundingClientRect(), mx = (e.clientX - r.left) * W / r.width, best = 0;
+      mins.forEach(function (m, i) { if (Math.abs(x(m) - mx) < Math.abs(x(mins[best]) - mx)) best = i; });
+      var m = mins[best], label = m < 60 ? m + ' min' : m < 1440 ? (m / 60).toString().replace('.', ',') + ' h' : (m / 1440).toString().replace('.', ',') + ' dia' + (m >= 2880 ? 's' : '');
+      guide.setAttribute('x1', x(m)); guide.setAttribute('x2', x(m)); guide.style.visibility = 'visible';
+      series.forEach(function (sr, k) { dots[k].setAttribute('cx', x(m)); dots[k].setAttribute('cy', y(sr[0][best])); dots[k].style.visibility = 'visible'; });
+      tip(hit, 'Até ' + label + ' depois do disparo', series.slice().reverse().map(function (sr) { return [sr[1], sr[2] + ': ' + pct(sr[0][best]) + ' dos enviados']; }));
+    });
+    hit.addEventListener('pointerleave', function () {
+      guide.style.visibility = 'hidden';
+      dots.forEach(function (d) { d.style.visibility = 'hidden'; });
+    });
   }
 
-  // 4. Motivos das falhas: barras horizontais com o motivo em cima e o total na ponta.
+  // 3. Taxa de resposta por horário do disparo, com IC 95%. Horários com pouca base ficam apagados.
+  function drawHours(box) {
+    var W = box.clientWidth, H = 220, left = 40, right = 6, top = 10, base = H - 26;
+    var hours = data.hours, band = (W - left - right) / 24, bw = Math.max(4, Math.min(20, band - 4));
+    var solid = hours.filter(function (h) { return h.n >= 10; });
+    var max = niceMax(Math.max.apply(null, (solid.length ? solid.map(function (h) { return h.ci[1]; }) : hours.map(function (h) { return h.rate || 0; })).concat([1])));
+    var y = function (p) { return base - (base - top) * Math.min(p, max) / max; };
+    var s = svg(box, W, H), g = el('g', {}, s), color = v('--series-1');
+    gridY(g, left, W - right, y, max);
+    hours.forEach(function (h, i) {
+      var cx = left + band * i + band / 2;
+      if (i % 3 === 0) el('text', {x: cx, y: H - 8, 'text-anchor': 'middle'}, g, i + 'h');
+      if (!h.n) return;
+      var weak = h.n < 10;
+      vbar(g, cx - bw / 2, base, bw, base - y(h.rate || 0), color, weak ? 0.3 : 0);
+      if (!weak) {
+        el('line', {x1: cx, x2: cx, y1: y(h.ci[0]), y2: y(h.ci[1]), style: 'stroke:var(--text);opacity:.55', 'stroke-width': 1.5}, g);
+        el('line', {x1: cx - 3, x2: cx + 3, y1: y(h.ci[1]), y2: y(h.ci[1]), style: 'stroke:var(--text);opacity:.55', 'stroke-width': 1.5}, g);
+        el('line', {x1: cx - 3, x2: cx + 3, y1: y(h.ci[0]), y2: y(h.ci[0]), style: 'stroke:var(--text);opacity:.55', 'stroke-width': 1.5}, g);
+      }
+      var hit = el('rect', {x: left + band * i, y: top, width: band, height: base - top, style: 'fill:transparent'}, g);
+      tip(hit, 'Disparos às ' + i + 'h', [[color, 'Responderam: ' + pct(h.rate) + ' (' + h.k + ' de ' + h.n + ')'], ['', 'IC 95%: ' + ci(h.ci)]]
+        .concat(weak ? [['', 'Menos de 10 envios: não dá para comparar']] : []));
+    });
+  }
+
+  // 4. Motivos das falhas: motivo em cima, barra com total e % dos envios na ponta.
   function drawFailures(box) {
     var rows = data.failures, W = box.clientWidth, thick = 14, lineH = 16;
-    var max = Math.max.apply(null, rows.map(function (r) { return r.n; })), barMax = W - 48;
+    var max = Math.max.apply(null, rows.map(function (r) { return r.n; })), barMax = W - 110;
     var texts = rows.map(function (r) { return wrap(r.reason, W, 2); });
     var H = texts.reduce(function (sum, t) { return sum + t.length * lineH + 4 + thick + 14; }, 0);
     var s = svg(box, W, H), g = el('g', {}, s), y = 0;
@@ -154,14 +179,14 @@
       texts[i].forEach(function (line, k) { el('text', {x: 0, y: y + 13 + k * lineH, class: 'lbl'}, g, line); });
       var w = Math.max(3, barMax * r.n / max);
       hbar(g, 0, y + textH + 4, w, thick, v('--critical'));
-      el('text', {x: w + 8, y: y + textH + 4 + thick - 2, class: 'val'}, g, String(r.n));
+      el('text', {x: w + 8, y: y + textH + 4 + thick - 2, class: 'val'}, g, r.n + ' · ' + pct(r.pct));
       y += textH + 4 + thick + 14;
       var hit = el('rect', {x: 0, y: top, width: W, height: y - top - 6, style: 'fill:transparent'}, g);
-      tip(hit, r.reason, [['', r.n + ' de ' + data.failed + ' falhas (' + pct(r.n * 100 / data.failed) + ')']]);
+      tip(hit, r.reason, [['', r.n + ' falhas · ' + pct(r.pct) + ' dos envios do período']]);
     });
   }
 
-  var drawers = {compare: drawCompare, delays: drawDelays, heat: drawHeat, failures: drawFailures};
+  var drawers = {funnel: drawFunnel, curve: drawCurve, hours: drawHours, failures: drawFailures};
   function drawAll() {
     document.querySelectorAll('[data-chart]').forEach(function (box) { drawers[box.dataset.chart](box); });
   }
@@ -169,12 +194,13 @@
   var pending;
   window.addEventListener('resize', function () { clearTimeout(pending); pending = setTimeout(drawAll, 120); });
 
-  // Dica ao passar o mouse (ou tocar) em uma barra/célula.
+  // Dica ao passar o mouse (ou tocar) em uma marca.
   var box = document.createElement('div');
   box.className = 'chart-tip';
   box.hidden = true;
   document.body.appendChild(box);
   function show(target, x, y) {
+    if (!target.getAttribute('data-tip')) { box.hidden = true; return; }
     box.textContent = '';
     var b = document.createElement('b');
     b.textContent = target.getAttribute('data-tip');

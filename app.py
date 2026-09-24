@@ -194,10 +194,19 @@ def duration_text(seconds):
         return f'{hours:.1f} h'.replace('.0 h', ' h').replace('.', ',')
     return f'{hours / 24:.1f} dias'.replace('.0 dias', ' dias').replace('.', ',')
 
-# Faixas de tempo entre o disparo e a leitura/resposta.
-DELAY_BUCKETS = [(300, 'até 5 min'), (900, '5–15 min'), (3600, '15–60 min'), (3 * 3600, '1–3 h'),
-                 (6 * 3600, '3–6 h'), (86400, '6–24 h'), (3 * 86400, '1–3 dias'), (float('inf'), '+3 dias')]
-WEEKDAYS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
+def wilson(k, n, z=1.96):
+    """Intervalo de confiança de 95% (Wilson) para uma proporção, em %."""
+    if not n:
+        return [0.0, 0.0]
+    p = k / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return [round(max(0, center - half) * 100, 1), round(min(1, center + half) * 100, 1)]
+
+# Pontos (em minutos) da curva acumulada, em escala log: 1 min até 7 dias.
+CURVE_MINUTES = [1, 2, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720, 1080, 1440, 2160, 2880, 4320, 7200, 10080]
+MIN_SAMPLE = 30  # Abaixo disso a taxa é marcada como pouco confiável.
 
 def median(values):
     values = sorted(values)
@@ -559,55 +568,97 @@ def create_apps(db_path=None, settings=None):
                     p['read'] = e['ts']
             else:
                 p['replies'].append(e)
-        chosen = {cid: p for cid, p in people.items()
-                  if p['send'] and p['send'] >= cutoff and (not campaign or owner.get(cid) == campaign)}
+        now = time.time()
+        in_scope = lambda cid: not campaign or owner.get(cid) == campaign
+        def window(start, end):
+            return {cid: p for cid, p in people.items()
+                    if p['send'] and start <= p['send'] < end and in_scope(cid)}
+        chosen = window(cutoff, now + 1)
 
-        # 1. Comparativo entre campanhas (ignora o filtro de campanha, respeita o período).
-        per = {}
+        def funnel(group):
+            """Contagens do funil. Resposta implica entrega e leitura (tique azul pode estar desligado)."""
+            f = {'sent': 0, 'delivered': 0, 'read': 0, 'replied': 0, 'accepted': 0}
+            for p in group:
+                answered = bool(p['replies']) and not p['failed']
+                f['sent'] += 1
+                f['delivered'] += p['delivered'] or answered
+                f['read'] += bool(p['read']) or answered
+                f['replied'] += answered
+                f['accepted'] += answered and p['replies'][-1]['result'] == 'aceitou'
+            return f
+        def rate(k, n):
+            return round(k * 100 / n, 1) if n else None
+
+        # 1. KPIs do período contra o período anterior de mesmo tamanho.
+        cur = funnel(chosen.values())
+        prev = funnel(window(cutoff - days * 86400, cutoff).values()) if days else None
+        kpis = []
+        for key, label, num, den in [('sent', 'Enviados', 'sent', None), ('delivered', 'Taxa de entrega', 'delivered', 'sent'),
+                                     ('read', 'Taxa de leitura', 'read', 'sent'), ('replied', 'Taxa de resposta', 'replied', 'sent'),
+                                     ('accepted', 'Taxa de aceite', 'accepted', 'sent')]:
+            value = cur[num] if den is None else rate(cur[num], cur[den])
+            before = None
+            if prev and prev['sent']:
+                before = prev[num] if den is None else rate(prev[num], prev[den])
+            delta = None
+            if value is not None and before is not None:
+                delta = round((value - before) / before * 100, 1) if den is None and before else round(value - before, 1)
+            kpis.append({'key': key, 'label': label, 'value': value, 'n': cur[num], 'delta': delta,
+                         'unit': 'count' if den is None else 'pct', 'prev_sent': prev['sent'] if prev else 0})
+
+        # 2. Funil etapa a etapa por campanha, com n e IC de 95% (período; ignora o filtro de campanha).
+        steps = [('delivered', 'sent', 'Entrega', 'entregues / enviados'), ('read', 'delivered', 'Leitura', 'lidas / entregues'),
+                 ('replied', 'read', 'Resposta', 'responderam / leram'), ('accepted', 'replied', 'Aceite', 'aceitaram / responderam')]
+        groups = {}
         for cid, p in people.items():
-            if not p['send'] or p['send'] < cutoff:
-                continue
-            c = per.setdefault(owner[cid], {'name': owner[cid], 'sent': 0, 'delivered': 0, 'read': 0,
-                                            'replied': 0, 'accepted': 0, 'last': 0})
-            c['sent'] += 1
-            # Resposta implica entrega e leitura (confirmação de leitura pode estar desligada).
-            answered = bool(p['replies']) and not p['failed']
-            c['delivered'] += p['delivered'] or answered
-            c['read'] += bool(p['read']) or answered
-            c['replied'] += bool(p['replies'])
-            c['accepted'] += bool(p['replies']) and p['replies'][-1]['result'] == 'aceitou'
-            c['last'] = max(c['last'], p['send'])
-        compare = sorted(per.values(), key=lambda c: c['last'], reverse=True)[:8]
-        for c in compare:
-            for k in ('delivered', 'read', 'replied', 'accepted'):
-                c[k + '_pct'] = round(c[k] * 100 / c['sent'], 1) if c['sent'] else 0
+            if p['send'] and cutoff <= p['send'] <= now + 1:
+                groups.setdefault(owner[cid], []).append(p)
+        recent = sorted(groups, key=lambda c: max(p['send'] for p in groups[c]), reverse=True)[:8]
+        show_accept = any(funnel(groups[c])['accepted'] for c in recent)
+        used_steps = steps if show_accept else steps[:3]
+        compare = []
+        for name in recent:
+            f = funnel(groups[name])
+            row = {'name': name, 'sent': f['sent'], 'steps': []}
+            for num, den, label, _ in used_steps:
+                row['steps'].append({'k': f[num], 'n': f[den], 'rate': rate(f[num], f[den]),
+                                     'ci': wilson(f[num], f[den]), 'small': f[den] < MIN_SAMPLE})
+            compare.append(row)
+        total = funnel(chosen.values())
+        overall = [{'label': label, 'desc': desc, 'k': total[num], 'n': total[den], 'rate': rate(total[num], total[den]),
+                    'ci': wilson(total[num], total[den])} for num, den, label, desc in used_steps]
+        # A maior perda olha entrega, leitura e resposta. O aceite depende da classificação
+        # das respostas ("a classificar" contaria como perda), então fica de fora.
+        leak = min((s for s in overall[:3] if s['n']), key=lambda s: s['rate'], default=None)
 
-        # 2. Tempo entre o disparo e a leitura/resposta.
+        # 3. Curva acumulada: % dos enviados que já leu (confirmado) / respondeu até t minutos.
         read_delays = [p['read'] - p['send'] for p in chosen.values() if p['read'] and p['read'] >= p['send']]
         reply_delays = []
         for p in chosen.values():
             after = [r['ts'] for r in p['replies'] if r['ts'] >= p['send']]
-            if after:
+            if after and not p['failed']:
                 reply_delays.append(min(after) - p['send'])
-        def bucket(values):
-            counts = [0] * len(DELAY_BUCKETS)
-            for v in values:
-                counts[next(i for i, (edge, _) in enumerate(DELAY_BUCKETS) if v < edge)] += 1
-            return [round(n * 100 / len(values), 1) if values else 0 for n in counts], counts
-        read_pct, read_n = bucket(read_delays)
-        reply_pct, reply_n = bucket(reply_delays)
+        n_sent = len(chosen)
+        def curve(delays):
+            return [rate(sum(d <= m * 60 for d in delays), n_sent) or 0 for m in CURVE_MINUTES]
+        reply_curve = curve(reply_delays)
+        final_reply = rate(len(reply_delays), n_sent) or 0
+        share = lambda minutes: round(sum(d <= minutes * 60 for d in reply_delays) * 100 / len(reply_delays)) if reply_delays else 0
 
-        # 3. Dia da semana × hora das respostas (horário de Brasília).
-        heat = [[0] * 24 for _ in WEEKDAYS]
-        replies_total = 0
+        # 4. Taxa de resposta por horário do disparo (Brasília). Só compara horários com amostra.
+        by_hour = {}
         for p in chosen.values():
-            for r in p['replies']:
-                local = brasilia(r['ts'])
-                heat[local.weekday()][local.hour] += 1
-                replies_total += 1
-        peak = max(((heat[d][h], d, h) for d in range(7) for h in range(24)), default=(0, 0, 0))
+            h = brasilia(p['send']).hour
+            b = by_hour.setdefault(h, [0, 0])
+            b[0] += 1
+            b[1] += bool(p['replies']) and not p['failed']
+        hours = [{'hour': h, 'n': by_hour.get(h, [0, 0])[0], 'k': by_hour.get(h, [0, 0])[1],
+                  'rate': rate(by_hour.get(h, [0, 0])[1], by_hour.get(h, [0, 0])[0]),
+                  'ci': wilson(by_hour.get(h, [0, 0])[1], by_hour.get(h, [0, 0])[0])} for h in range(24)]
+        comparable = [h for h in hours if h['n'] >= 10]
+        best_hour = max(comparable, key=lambda h: h['rate'], default=None) if len(comparable) >= 3 else None
 
-        # 4. Motivos das falhas (inclui envios sem campanha quando não há filtro de campanha).
+        # 5. Motivos das falhas, em % dos envios do período (inclui envios sem campanha sem filtro).
         reasons, seen = {}, set()
         for f in failures:
             if f['ts'] < cutoff or f['context'] in seen:
@@ -620,18 +671,19 @@ def create_apps(db_path=None, settings=None):
         ranked = sorted(reasons.items(), key=lambda kv: kv[1], reverse=True)
         if len(ranked) > 7:
             ranked = ranked[:6] + [('Outros motivos', sum(n for _, n in ranked[6:]))]
+        base = max(n_sent, sum(reasons.values()))
 
-        best = max((c for c in compare if c['sent'] >= 1), key=lambda c: c['replied_pct'], default=None)
         return {
-            'sent': len(chosen), 'replies': replies_total,
-            'compare': compare, 'show_accepted': any(c['accepted'] for c in compare),
-            'best': best if len(compare) > 1 else None,
-            'buckets': [label for _, label in DELAY_BUCKETS],
-            'read_pct': read_pct, 'read_n': read_n, 'reply_pct': reply_pct, 'reply_n': reply_n,
-            'reads': len(read_delays), 'answered': len(reply_delays),
-            'median_read': duration_text(median(read_delays)), 'median_reply': duration_text(median(reply_delays)),
-            'weekdays': WEEKDAYS, 'heat': heat, 'peak': {'n': peak[0], 'day': WEEKDAYS[peak[1]], 'hour': peak[2]},
-            'failures': [{'reason': r, 'n': n} for r, n in ranked], 'failed': sum(reasons.values()),
+            'days': days, 'sent': n_sent, 'replies': len(reply_delays), 'min_sample': MIN_SAMPLE,
+            'kpis': kpis, 'has_prev': bool(prev and prev['sent']),
+            'compare': compare, 'step_labels': [s[2] for s in used_steps], 'step_desc': [s[3] for s in used_steps],
+            'overall': overall, 'leak': leak,
+            'curve_minutes': CURVE_MINUTES, 'reply_curve': reply_curve, 'read_curve': curve(read_delays),
+            'final_reply': final_reply, 'reads': len(read_delays), 'answered': len(reply_delays),
+            'share_1h': share(60), 'share_24h': share(1440), 'median_reply': duration_text(median(reply_delays)),
+            'hours': hours, 'comparable_hours': len(comparable), 'best_hour': best_hour,
+            'failures': [{'reason': r, 'n': n, 'pct': rate(n, base)} for r, n in ranked],
+            'failed': sum(reasons.values()), 'failed_pct': rate(sum(reasons.values()), base) or 0,
         }
 
     @panel.get('/')
