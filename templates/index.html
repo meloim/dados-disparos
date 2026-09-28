@@ -337,6 +337,27 @@
   </section>
 </div>
 
+<section class="card" id="reprocessar">
+  <h2>Reprocessar ligações</h2>
+  <p class="muted">Confere de novo, para todos os envios já recebidos, a qual campanha cada um pertence. Útil quando um número aparece como “Sem registro de envio” mas a Datafy mostra que foi enviado: normalmente o envio foi ligado a outra campanha que tinha o mesmo número. Envios que você moveu à mão não são alterados.</p>
+  {% if preview is none %}
+    <form action="/reprocessar" method="post"><input type="hidden" name="csrf" value="{{session.csrf}}"><button name="acao" value="previa" class="btn ghost">Ver o que seria corrigido</button></form>
+  {% elif not preview %}
+    <div class="status-box on"><b>Nada a corrigir.</b>Todos os envios já estão na campanha certa.</div>
+  {% else %}
+    <div class="status-box">
+      <b>{{ preview|sum(attribute=2) }} envio(s) vão mudar de campanha:</b>
+      <ul class="moves">{% for before, after, n in preview %}<li><b>{{ n }}</b> de “{{ before }}” → para “{{ after }}”</li>{% endfor %}</ul>
+    </div>
+    <form action="/reprocessar" method="post" class="row"><input type="hidden" name="csrf" value="{{session.csrf}}">
+      <button name="acao" value="aplicar">Aplicar correção</button>
+      <a class="btn ghost" href="{{ url_for('index', aba='config') }}">Cancelar</a>
+    </form>
+    <p class="help">Recomendado: clique em “Salvar backup” acima antes de aplicar.</p>
+  {% endif %}
+  <p class="help">Isso também acontece sozinho sempre que você importa uma lista.</p>
+</section>
+
 {# Respostas que o painel não soube classificar sozinho #}
 {% if show_results or inbox %}
 <section class="card">

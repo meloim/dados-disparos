@@ -278,6 +278,56 @@ class Integration(unittest.TestCase):
         self.assertIn('Sem registro de envio',html)
         self.assertIn('data-filter="none"',html)
         self.assertIn('Service temporarily unavailable',html)
+    def campaign_of(self,wamid):
+        return self.scalar(f"SELECT c.campaign FROM outbounds o JOIN contacts c ON c.id=o.contact_id WHERE o.id='{wamid}'")
+    def test_list_imported_after_dispatch_takes_send_from_old_list(self):
+        # Suspeita B: o número estava numa lista antiga que nunca recebeu envio.
+        now=int(time.time())
+        self.import_list('Antiga','telefone\n5583991131671\n')
+        self.send(statuses=[self.status_to('wamid.p','558391131671',now-100),
+                            self.status_to('wamid.q','5583911111111',now-99),
+                            self.status_to('wamid.r','5583922222222',now-98)])
+        self.assertEqual(self.campaign_of('wamid.p'),'Antiga')  # Única lista esperando esse número.
+        r=self.import_list('Nova','telefone\n5583991131671\n5583911111111\n5583922222222\n')
+        self.assertEqual(self.campaign_of('wamid.p'),'Nova')
+        self.assertEqual(self.campaign_of('wamid.q'),'Nova')
+        html=self.panel.get('/?campanha=Nova').get_data(as_text=True)
+        self.assertNotIn('Sem registro de envio</span>',html.split('<tbody>')[1] if '<tbody>' in html else html)
+    def test_list_beats_time_window_capture(self):
+        # Suspeita A: a captura por horário pegou o disparo antes de a lista ser importada.
+        now=int(time.time())
+        self.activate('Janela',now-500)
+        self.send(statuses=[self.status_to('wamid.a','5583911111111',now-100),self.status_to('wamid.b','5583922222222',now-99)])
+        self.assertEqual(self.campaign_of('wamid.a'),'Janela')
+        self.import_list('Real','telefone\n5583911111111\n5583922222222\n')
+        self.assertEqual(self.campaign_of('wamid.a'),'Real')
+        self.assertEqual(self.campaign_of('wamid.b'),'Real')
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM contacts WHERE campaign='Janela'"),0)
+    def test_reprocess_preview_then_apply(self):
+        # As duas listas já estavam importadas; a campanha mais antiga disparou depois.
+        now=int(time.time())
+        self.import_list('A','telefone\n5583991131671\n5583911111111\n')
+        self.import_list('B','telefone\n5583991131671\n5583933333333\n')
+        self.send(statuses=[self.status_to('wamid.p','558391131671',now-100),self.status_to('wamid.x','5583911111111',now-99)])
+        self.assertEqual(self.campaign_of('wamid.p'),'B')  # Na hora, vai para a lista mais recente.
+        self.assertEqual(self.panel.post('/reprocessar',data={'csrf':self.csrf,'acao':'previa'}).status_code,302)
+        html=self.panel.get('/?aba=config&previa=1').get_data(as_text=True)
+        self.assertIn('vão mudar de campanha',html)
+        self.assertEqual(self.campaign_of('wamid.p'),'B')  # A prévia não altera nada.
+        self.panel.post('/reprocessar',data={'csrf':self.csrf,'acao':'aplicar'})
+        self.assertEqual(self.campaign_of('wamid.p'),'A')
+        self.assertIn('Nada a corrigir',self.panel.get('/?aba=config&previa=1').get_data(as_text=True))
+    def test_manual_move_is_not_reprocessed(self):
+        now=int(time.time())
+        self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])
+        self.panel.post('/mover',data={'csrf':self.csrf,'campanha':'Manual','envio':['wamid.m']})
+        self.import_list('Lista','telefone\n5583911111111\n')
+        self.assertEqual(self.campaign_of('wamid.m'),'Manual')
+    def test_read_without_sent_links_to_list(self):
+        now=int(time.time())
+        self.import_list('Lista','telefone\n5583911111111\n')
+        self.send(statuses=[self.status_to('wamid.r','5583911111111',now-50,'read')])
+        self.assertEqual(self.campaign_of('wamid.r'),'Lista')
     def test_rules_persist_and_reject_overlap(self):
         self.panel.post('/regras',data={'csrf':self.csrf,'aceite':'YES','recusa':'yes'})
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM preferences'),0)

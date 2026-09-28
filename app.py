@@ -289,10 +289,20 @@ def create_apps(db_path=None, settings=None):
           id TEXT PRIMARY KEY, contact_id INTEGER NOT NULL REFERENCES contacts(id));
         INSERT INTO outbounds SELECT outbound,id FROM contacts WHERE outbound IS NOT NULL ON CONFLICT DO NOTHING;
         CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS pinned_outbounds (id TEXT PRIMARY KEY);
         '''
         if database_url:
             schema = schema.replace('id INTEGER PRIMARY KEY', 'id BIGSERIAL PRIMARY KEY')
         db.executescript(schema)
+        # Origem do contato: 'lista' (CSV importado), 'horario' (captura por horário) ou 'manual' (movido).
+        if database_url:
+            db.execute('ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source TEXT')
+        elif 'source' not in [r['name'] for r in db.execute('PRAGMA table_info(contacts)').fetchall()]:
+            db.execute('ALTER TABLE contacts ADD COLUMN source TEXT')
+        # Contatos antigos sem origem: a captura por horário criava o contato com o telefone como nome.
+        db.execute('''UPDATE contacts SET source = CASE WHEN name = phone
+            AND campaign IN (SELECT campaign FROM campaign_windows) THEN 'horario' ELSE 'lista' END
+            WHERE source IS NULL''')
 
     panel = Flask(__name__)
     panel.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
@@ -415,12 +425,17 @@ def create_apps(db_path=None, settings=None):
         # várias campanhas podem rodar ao mesmo tempo.
         # Sem lista, vale a captura por horário (modo antigo), se estiver ligada.
         # Entrega/leitura podem chegar dias depois e nunca escolhem campanha.
+        # Se o 'sent' se perdeu, a entrega/leitura liga o envio a uma lista importada
+        # (nunca à captura por horário). O reprocessamento corrige depois quem ficou na lista errada.
         waiting = {}
-        for c in db.execute('SELECT id,phone FROM contacts WHERE outbound IS NULL ORDER BY id DESC').fetchall():
+        for c in db.execute("SELECT id,phone FROM contacts WHERE outbound IS NULL AND COALESCE(source,'lista')<>'horario' ORDER BY id DESC").fetchall():
             waiting.setdefault(phone_key(c['phone']), []).append(c['id'])
-        for ev in db.execute("""SELECT * FROM events WHERE kind='status' AND body IN ('sent','failed')
-                AND contact_id IS NULL ORDER BY ts DESC""").fetchall():
-            if not ev['context'] or not 10 <= len(ev['phone'] or '') <= 15:
+        first = {}
+        for ev in db.execute("""SELECT * FROM events WHERE kind='status' AND contact_id IS NULL
+                AND context IS NOT NULL AND COALESCE(association,'')<>? ORDER BY ts""",(DISCARDED,)).fetchall():
+            first.setdefault(ev['context'], ev)
+        for ev in sorted(first.values(), key=lambda e: e['ts'], reverse=True):
+            if not 10 <= len(ev['phone'] or '') <= 15:
                 continue
             if db.execute('SELECT 1 FROM outbounds WHERE id=?',(ev['context'],)).fetchone():
                 continue
@@ -428,14 +443,104 @@ def create_apps(db_path=None, settings=None):
             if listed:
                 attach(db, listed.pop(0), ev['context'])
                 continue
+            if ev['body'] not in ('sent', 'failed'):
+                continue
             window = db.execute('''SELECT campaign FROM campaign_windows WHERE started<=?
                 AND (ended IS NULL OR ?<ended) ORDER BY started DESC LIMIT 1''',(ev['ts'],ev['ts'])).fetchone()
             if not window:
                 continue
-            db.execute('''INSERT INTO contacts(campaign,name,phone)
-              VALUES(?,?,?) ON CONFLICT(campaign,phone) DO NOTHING''',(window['campaign'],ev['phone'],ev['phone']))
+            db.execute('''INSERT INTO contacts(campaign,name,phone,source)
+              VALUES(?,?,?,'horario') ON CONFLICT(campaign,phone) DO NOTHING''',(window['campaign'],ev['phone'],ev['phone']))
             contact = db.execute('SELECT id FROM contacts WHERE campaign=? AND phone=?',(window['campaign'],ev['phone'])).fetchone()
             attach(db, contact['id'], ev['context'])
+
+    BURST = 12 * 3600  # Envios de um mesmo disparo saem juntos; além disso não conta como o mesmo disparo.
+
+    def reprocess(db, apply=True):
+        """Refaz a ligação envio → contato de todos os envios automáticos.
+
+        Regra: um envio pertence a um contato com o mesmo telefone; listas importadas ganham
+        da captura por horário; se o telefone está em várias campanhas, vence aquela cujos
+        outros envios saíram mais perto no tempo (o mesmo disparo). Envios movidos à mão
+        ficam como estão. Devolve o resumo [(de, para, quantidade)].
+        """
+        contacts = {c['id']: c for c in db.execute('SELECT id,campaign,phone,source FROM contacts').fetchall()}
+        by_key = {}
+        for c in contacts.values():
+            by_key.setdefault(phone_key(c['phone']), []).append(c)
+        pinned = {r['id'] for r in db.execute('SELECT id FROM pinned_outbounds').fetchall()}
+        owner = {r['id']: r['contact_id'] for r in db.execute('SELECT id,contact_id FROM outbounds').fetchall()}
+        sends = {}  # contexto -> horário do envio e telefone
+        for r in db.execute("""SELECT context, MIN(ts) AS ts, MIN(phone) AS phone FROM events WHERE kind='status'
+                AND context IS NOT NULL AND COALESCE(association,'')<>? GROUP BY context""",(DISCARDED,)).fetchall():
+            sends[r['context']] = {'ts': r['ts'], 'key': phone_key(r['phone'])}
+        def candidates(ctx):
+            found = by_key.get(sends[ctx]['key'], [])
+            listed = [c for c in found if c['source'] != 'horario']
+            return listed or found
+        # 1ª passada: envios sem dúvida (um só contato possível) viram âncoras de horário por campanha.
+        choice, anchors = {}, {}
+        for ctx in sends:
+            if ctx in pinned:
+                choice[ctx] = owner.get(ctx)
+            else:
+                cands = candidates(ctx)
+                if len(cands) == 1:
+                    choice[ctx] = cands[0]['id']
+            if choice.get(ctx) in contacts:
+                anchors.setdefault(contacts[choice[ctx]]['campaign'], []).append((sends[ctx]['ts'], sends[ctx]['key']))
+        # 2ª passada: telefone em várias campanhas → a do disparo mais próximo no tempo.
+        for ctx, s in sends.items():
+            if ctx in choice:
+                continue
+            cands = candidates(ctx)
+            if not cands:
+                continue
+            def distance(c):
+                near = [abs(t - s['ts']) for t, k in anchors.get(c['campaign'], []) if k != s['key']]
+                return min(near) if near and min(near) <= BURST else float('inf')
+            current = owner.get(ctx)
+            ranked = sorted(cands, key=lambda c: (distance(c), c['id'] != current, -c['id']))
+            choice[ctx] = ranked[0]['id']
+        moves = {}
+        changed = [ctx for ctx, cid in choice.items() if cid and owner.get(ctx) != cid and ctx not in pinned]
+        for ctx in changed:
+            before = contacts[owner[ctx]]['campaign'] if owner.get(ctx) in contacts else 'Sem campanha'
+            after = contacts[choice[ctx]]['campaign']
+            moves[(before, after)] = moves.get((before, after), 0) + 1
+        summary = sorted(((a, b, n) for (a, b), n in moves.items()), key=lambda m: -m[2])
+        if not apply or not changed:
+            return summary
+        touched = set()
+        for ctx in changed:
+            old, new = owner.get(ctx), choice[ctx]
+            touched.update(x for x in (old, new) if x)
+            db.execute('''INSERT INTO outbounds(id,contact_id) VALUES(?,?)
+                ON CONFLICT(id) DO UPDATE SET contact_id=excluded.contact_id''',(ctx,new))
+            db.execute("UPDATE events SET contact_id=?,association='Reprocessado' WHERE kind='status' AND context=?",(new,ctx))
+            if old:
+                # Respostas do contato antigo são religadas do zero (exceto revisões manuais).
+                db.execute('''UPDATE events SET contact_id=NULL,association=NULL WHERE kind='reply' AND contact_id=?
+                    AND COALESCE(association,'')<>?''',(old,MANUAL))
+        # Cada contato mantém como "envio principal" o primeiro envio que ainda é dele.
+        for cid in touched:
+            db.execute('UPDATE contacts SET outbound=NULL WHERE id=?',(cid,))
+        for cid in touched:
+            mine = db.execute('SELECT id FROM outbounds WHERE contact_id=? ORDER BY id LIMIT 1',(cid,)).fetchone()
+            if mine:
+                db.execute('UPDATE contacts SET outbound=? WHERE id=?',(mine['id'],cid))
+        # Contatos criados pela captura por horário que ficaram vazios deixam de existir.
+        for cid in touched:
+            c = contacts.get(cid)
+            if c and c['source'] == 'horario' \
+                    and not db.execute('SELECT 1 FROM outbounds WHERE contact_id=?',(cid,)).fetchone() \
+                    and not db.execute('SELECT 1 FROM events WHERE contact_id=?',(cid,)).fetchone():
+                db.execute('DELETE FROM contacts WHERE id=?',(cid,))
+        link_by_context(db)
+        reclassify(db)
+        db.execute('INSERT INTO audit(ts,action) VALUES(?,?)',(int(time.time()),json.dumps(
+            {'action': 'reprocessar', 'moves': summary}, ensure_ascii=False)))
+        return summary
 
     @webhook.post('/webhook/datafy')
     def receive():
@@ -739,8 +844,12 @@ def create_apps(db_path=None, settings=None):
             # Nos gráficos, "Todas" é o padrão: o comparativo já mostra cada campanha.
             campaign = request.args.get('campanha', '')
             charts = analytics(0 if period == 'tudo' else int(period), campaign)
+        preview = None
+        if tab == 'config' and request.args.get('previa'):
+            with connect() as db:
+                preview = reprocess(db, apply=False)
         return render_template('index.html', rows=rows, totals=totals, campaigns=campaigns,
-            charts=charts, period=period,
+            charts=charts, period=period, preview=preview,
             campaign=campaign, inbox=inbox, outside=outside, labels=LABELS, date_text=date_text,
             configured=bool(settings.get('webhook_secret') and settings.get('phone_number_id')),
             last=date_text(last), rules=rules, active=active, show_results=show_results,
@@ -847,11 +956,13 @@ def create_apps(db_path=None, settings=None):
                     old = db.execute('SELECT outbound FROM contacts WHERE campaign=? AND phone=?',(campaign,number)).fetchone()
                     if old and old['outbound'] and outbound and old['outbound']!=outbound:
                         raise ValueError('Este contato já tem outro envio nesta campanha. Crie uma campanha diferente para novo disparo.')
-                    db.execute('''INSERT INTO contacts(campaign,name,phone,outbound) VALUES(?,?,?,?)
+                    db.execute('''INSERT INTO contacts(campaign,name,phone,outbound,source) VALUES(?,?,?,?,'lista')
                       ON CONFLICT(campaign,phone) DO UPDATE SET name=excluded.name,
-                      outbound=COALESCE(contacts.outbound,excluded.outbound)''',(campaign,name,number,outbound))
+                      outbound=COALESCE(contacts.outbound,excluded.outbound),source='lista' ''',(campaign,name,number,outbound))
                 capture_sends(db)
                 link_by_context(db)
+                # A lista pode ter chegado depois do disparo: envios já ligados a outra campanha voltam para cá.
+                moves = reprocess(db)
                 reclassify(db)
                 names = sorted({p[0] for p in parsed})
                 linked = sum(db.execute('SELECT COUNT(*) AS n FROM contacts WHERE campaign=? AND outbound IS NOT NULL',(c,)).fetchone()['n'] for c in names)
@@ -860,6 +971,9 @@ def create_apps(db_path=None, settings=None):
                 msg += f' {linked} já com envio registrado.'
             if skipped:
                 msg += f' {skipped} linha(s) ignorada(s) por telefone inválido.'
+            relinked = sum(n for _, dest, n in moves if dest in names)
+            if relinked:
+                msg += f' {relinked} envio(s) que estavam em outra campanha foram trazidos para cá.'
             flash(msg)
         except (ValueError, UnicodeError, csv.Error, sqlite3.IntegrityError,
                 psycopg.IntegrityError if psycopg else sqlite3.IntegrityError) as exc:
@@ -892,15 +1006,27 @@ def create_apps(db_path=None, settings=None):
                 contact_id = next((c['id'] for c in db.execute('SELECT id,phone FROM contacts WHERE campaign=?',(campaign,)).fetchall()
                     if phone_key(c['phone'])==key), None)
                 if contact_id is None:
-                    db.execute('INSERT INTO contacts(campaign,name,phone) VALUES(?,?,?)',(campaign,ev['phone'],ev['phone']))
+                    db.execute("INSERT INTO contacts(campaign,name,phone,source) VALUES(?,?,?,'manual')",(campaign,ev['phone'],ev['phone']))
                     contact_id = db.execute('SELECT id FROM contacts WHERE campaign=? AND phone=?',(campaign,ev['phone'])).fetchone()['id']
                 attach(db, contact_id, context)
+                # Escolha manual: o reprocessamento automático não mexe mais neste envio.
+                db.execute('INSERT INTO pinned_outbounds(id) VALUES(?) ON CONFLICT DO NOTHING',(context,))
                 moved += 1
             link_by_context(db)
             reclassify(db)
             db.execute('INSERT INTO audit(ts,action) VALUES(?,?)',(int(time.time()),json.dumps({'action':'mover','campaign':campaign,'envios':contexts})))
         flash(f'{moved} envio(s) movido(s) para “{campaign}”.')
         return redirect(url_for('index', campanha=campaign))
+
+    @panel.post('/reprocessar')
+    def reprocess_route():
+        if request.form.get('acao') != 'aplicar':
+            return redirect(url_for('index', aba='config', previa=1, _anchor='reprocessar'))
+        with connect() as db:
+            summary = reprocess(db)
+        moved = sum(n for _, _, n in summary)
+        flash(f'{moved} envio(s) religado(s) à campanha certa.' if moved else 'Nada a corrigir: todos os envios já estavam na campanha certa.')
+        return redirect(url_for('index', aba='config', _anchor='reprocessar'))
 
     @panel.post('/revisar')
     def review():
