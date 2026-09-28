@@ -864,8 +864,25 @@ def create_apps(db_path=None, settings=None):
         if tab == 'config' and request.args.get('previa'):
             with connect() as db:
                 preview = reprocess(db, apply=False)
+        # Diagnóstico: tudo o que o painel recebeu e guardou sobre um telefone.
+        diag, diag_q = None, request.args.get('diag', '').strip()
+        if tab == 'config' and diag_q:
+            key = phone_key(diag_q)
+            with connect() as db:
+                found = [dict(c) for c in db.execute('SELECT id,campaign,name,phone,source,outbound FROM contacts').fetchall()
+                         if phone_key(c['phone']) == key]
+                names = {c['id']: c['campaign'] for c in db.execute('SELECT id,campaign FROM contacts').fetchall()}
+                evs = [dict(e) for e in db.execute('''SELECT id,kind,body,phone,ts,context,contact_id,association,raw
+                    FROM events ORDER BY ts''').fetchall() if phone_key(e['phone'] or '') == key]
+                pinned = {r['id'] for r in db.execute('SELECT id FROM pinned_outbounds').fetchall()}
+            for e in evs:
+                e['campaign'] = names.get(e['contact_id'], '')
+                e['when'] = date_text(e['ts'])
+                e['reason'] = fail_reason(e['raw']) if e['kind'] == 'status' and e['body'] == 'failed' else ''
+                e['pinned'] = e['context'] in pinned
+            diag = {'query': diag_q, 'key': key, 'contacts': found, 'events': evs}
         return render_template('index.html', rows=rows, totals=totals, campaigns=campaigns,
-            charts=charts, period=period, preview=preview,
+            charts=charts, period=period, preview=preview, diag=diag,
             campaign=campaign, inbox=inbox, outside=outside, labels=LABELS, date_text=date_text,
             configured=bool(settings.get('webhook_secret') and settings.get('phone_number_id')),
             last=date_text(last), rules=rules, active=active, show_results=show_results,

@@ -354,6 +354,15 @@ class Integration(unittest.TestCase):
         html=self.panel.get('/?aba=config').get_data(as_text=True)
         self.assertNotIn('<b>5584999426348</b>',html)
         self.assertIn('<b>+55 (84) 99942-6348</b>',html)
+    def test_number_diagnostic(self):
+        now=int(time.time())
+        self.import_list('Lista','telefone\n5583991131671\n')
+        html=self.panel.get('/?aba=config&diag=83+99113-1671').get_data(as_text=True)
+        self.assertIn('nunca recebeu nenhum aviso',html)
+        self.send(statuses=[self.status_to('wamid.p','558391131671',now-100),self.status_to('wamid.p','558391131671',now-90,'delivered')])
+        html=self.panel.get('/?aba=config&diag=5583991131671').get_data(as_text=True)
+        self.assertIn('Entregue',html)
+        self.assertIn('Lista',html)
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])

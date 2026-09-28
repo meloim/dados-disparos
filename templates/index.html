@@ -337,6 +337,35 @@
   </section>
 </div>
 
+<section class="card" id="diagnostico">
+  <h2>Diagnóstico de um número</h2>
+  <p class="muted">Mostra tudo o que o painel recebeu da Datafy sobre um telefone: em quais listas ele está e cada aviso (enviado, entregue, lido, falhou, resposta), com a campanha a que foi ligado.</p>
+  <form method="get" action="{{ url_for('index') }}#diagnostico" class="row">
+    <input type="hidden" name="aba" value="config">
+    <input name="diag" value="{{ diag.query if diag else '' }}" placeholder="Telefone, ex.: 83 99113-1671" aria-label="Telefone" style="flex:1;min-width:200px">
+    <button>Ver</button>
+  </form>
+  {% if diag %}
+  <div class="diag">
+    <p><b>Listas com esse número:</b>
+      {% for c in diag.contacts %}<span class="badge">{{ c.campaign }}{% if c.source == 'horario' %} · captura por horário{% elif c.source == 'manual' %} · movido à mão{% endif %}</span> {% else %}<span class="muted">nenhuma lista importada tem esse número.</span>{% endfor %}</p>
+    {% if diag.events %}
+    <div class="scroll"><table>
+      <thead><tr><th>Quando</th><th>Aviso</th><th>Ligado a</th><th>Mensagem (ID)</th></tr></thead>
+      <tbody>{% for e in diag.events %}<tr>
+        <td><small>{{ e.when }}</small></td>
+        <td>{% if e.kind == 'status' %}{{ status_label.get(e.body, e.body) }}{% if e.reason %} <small class="muted">· {{ e.reason }}</small>{% endif %}{% else %}Resposta: “{{ e.body }}”{% endif %}</td>
+        <td>{% if e.association == 'Descartado' %}<span class="muted">descartado</span>{% elif e.campaign %}{{ e.campaign }}{% if e.pinned %} <small class="muted">(fixado à mão)</small>{% endif %}{% else %}<span class="muted">sem campanha</span>{% endif %}</td>
+        <td><small class="muted">{{ (e.context or '')[-12:] }}</small></td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}
+    <div class="status-box"><b>O painel nunca recebeu nenhum aviso sobre esse número.</b>Se a Datafy mostra que ele foi enviado, o aviso se perdeu no caminho (por exemplo, com o site fora do ar durante um deploy). Nesse caso só a Datafy tem o status.</div>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+
 <section class="card" id="reprocessar">
   <h2>Reprocessar ligações</h2>
   <p class="muted">Confere de novo, para todos os envios já recebidos, a qual campanha cada um pertence. Útil quando um número aparece como “Sem registro de envio” mas a Datafy mostra que foi enviado: normalmente o envio foi ligado a outra campanha que tinha o mesmo número. Envios que você moveu à mão não são alterados.</p>
