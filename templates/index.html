@@ -366,8 +366,10 @@
   <p class="muted">“Sim”, “Não”, “Confirmar” e parecidos já são reconhecidos sozinhos. Aqui ficam só as respostas que precisam de uma pessoa para ler.</p>
   {% for e in inbox %}
   <div class="reply">
-    <div class="reply-head"><b>{{ e.name if e.name != e.phone else pretty_phone(e.phone) }}</b>
-      <small>{% if e.name != e.phone %}{{ pretty_phone(e.phone) }} · {% endif %}{{ e.campaign }} · {{ date_text(e.ts)[:16] }}</small></div>
+    {# O nome pode ser o próprio telefone (lista sem nome), com ou sem o nono dígito. #}
+    {% set named = phone_key(e.name) != phone_key(e.phone) %}
+    <div class="reply-head"><b>{{ e.name if named else pretty_phone(e.phone) }}</b>
+      <small>{% if named %}{{ pretty_phone(e.phone) }} · {% endif %}{{ e.campaign }} · {{ date_text(e.ts)[:16] }}</small></div>
     <span class="bubble">{{ e.body }}</span>
     <form action="/revisar" method="post" class="row">
       <input type="hidden" name="csrf" value="{{session.csrf}}"><input type="hidden" name="evento" value="{{e.id}}">

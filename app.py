@@ -30,6 +30,10 @@ except ImportError:  # Local mode does not require PostgreSQL.
 ROOT = Path(__file__).resolve().parent
 LABELS = {'pendente': 'Sem resposta', 'aceitou': 'Aceitou', 'recusou': 'Recusou', 'revisar': 'A classificar', 'outra': 'Outra resposta'}
 MANUAL = 'Revisão manual local'
+# Tipos de mensagem recebida que não são resposta de verdade.
+IGNORED_KINDS = {'revoke', 'unsupported', 'system', 'ephemeral', 'request_welcome', 'errors'}
+MEDIA_LABELS = {'audio': '🎤 Áudio', 'image': '🖼️ Imagem', 'video': '🎬 Vídeo', 'document': '📄 Documento',
+                'sticker': 'Figurinha', 'location': '📍 Localização', 'contacts': '👤 Contato compartilhado'}
 DISCARDED = 'Descartado'
 
 # Respostas curtas reconhecidas sem regra cadastrada (primeira palavra ou frase inteira).
@@ -592,9 +596,18 @@ def create_apps(db_path=None, settings=None):
                             button = inter.get(inter.get('type', ''), {})
                             body = button.get('title', '')
                             choice = button.get('id') or body
+                        elif kind in IGNORED_KINDS:
+                            continue  # Mensagem apagada, avisos do sistema: não são respostas.
+                        elif kind == 'reaction':
+                            # Reação com emoji na mensagem enviada (ex.: 👍) vale como resposta.
+                            reaction = msg.get('reaction', {})
+                            body = reaction.get('emoji', '')
+                            if not body:
+                                continue  # Reação removida.
+                            msg.setdefault('context', {'id': reaction.get('message_id')})
                         else:
-                            body = '[Mensagem de tipo: '+kind+']'
-                        result = classify(choice, body) if kind in ('text','button','interactive') else 'revisar'
+                            body = MEDIA_LABELS.get(kind, '[Mensagem de tipo: '+kind+']')
+                        result = classify(choice, body) if kind in ('text','button','interactive','reaction') else 'revisar'
                         context = msg.get('context', {}).get('id')
                         records.append((number+':message:'+msg['id'], 'reply', phone(msg['from']), number,
                             int(msg['timestamp']), context, str(body), str(choice), result, json.dumps(msg, ensure_ascii=False)))
@@ -857,7 +870,7 @@ def create_apps(db_path=None, settings=None):
             configured=bool(settings.get('webhook_secret') and settings.get('phone_number_id')),
             last=date_text(last), rules=rules, active=active, show_results=show_results,
             unlinked=len(sends), unlinked_sends=unlinked_sends, hosted=bool(os.environ.get('PANEL_PASSWORD')),
-            tab=tab, pretty_phone=pretty_phone)
+            tab=tab, pretty_phone=pretty_phone, phone_key=phone_key)
 
     @panel.post('/campanha')
     def campaign_control():
@@ -1144,6 +1157,12 @@ def create_apps(db_path=None, settings=None):
 
     # Liga e classifica eventos gravados antes de uma mudança nas regras de captura.
     with connect() as db:
+        # Mensagens apagadas e avisos do sistema gravados antes deixam de contar como resposta.
+        for kind in IGNORED_KINDS:
+            db.execute('''UPDATE events SET contact_id=NULL, association=? WHERE kind='reply' AND body=?''',
+                       (DISCARDED, '[Mensagem de tipo: '+kind+']'))
+        for kind, label in MEDIA_LABELS.items():
+            db.execute("UPDATE events SET body=? WHERE kind='reply' AND body=?",(label, '[Mensagem de tipo: '+kind+']'))
         capture_sends(db)
         link_by_context(db)
         reclassify(db)

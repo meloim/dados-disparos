@@ -337,6 +337,23 @@ class Integration(unittest.TestCase):
         self.assertEqual(self.campaign_of('wamid.r1'),'Reenvio')
         self.assertEqual(self.campaign_of('wamid.r2'),'Reenvio')
         self.assertEqual(self.campaign_of('wamid.o3'),'Original')
+    def test_revoke_ignored_and_reaction_counts(self):
+        now=int(time.time())
+        self.import_list('Lista','telefone\n5584999426348\n')
+        self.send(statuses=[self.status_to('wamid.l','558499426348',now-100)])
+        self.send([{'id':'rv','from':'558499426348','timestamp':str(now-50),'type':'revoke'}])
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM events WHERE kind='reply'"),0)
+        self.send([{'id':'re','from':'558499426348','timestamp':str(now-40),'type':'reaction','reaction':{'message_id':'wamid.l','emoji':'👍'}}])
+        self.assertEqual(self.scalar("SELECT result FROM events WHERE kind='reply'"),'aceitou')
+        self.assertIsNotNone(self.scalar("SELECT contact_id FROM events WHERE kind='reply'"))
+    def test_review_shows_phone_once_when_list_has_no_names(self):
+        now=int(time.time())
+        self.import_list('Lista','telefone\n5584999426348\n')
+        self.send(statuses=[self.status_to('wamid.l','558499426348',now-100)])
+        self.send([self.reply_from('r1','558499426348',now-50,'99942-6348')])
+        html=self.panel.get('/?aba=config').get_data(as_text=True)
+        self.assertNotIn('<b>5584999426348</b>',html)
+        self.assertIn('<b>+55 (84) 99942-6348</b>',html)
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])
