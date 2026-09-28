@@ -317,6 +317,26 @@ class Integration(unittest.TestCase):
         self.panel.post('/reprocessar',data={'csrf':self.csrf,'acao':'aplicar'})
         self.assertEqual(self.campaign_of('wamid.p'),'A')
         self.assertIn('Nada a corrigir',self.panel.get('/?aba=config&previa=1').get_data(as_text=True))
+    def test_old_sends_stay_when_new_list_shares_a_few_numbers(self):
+        # Envio antigo (outro disparo) não pode ser puxado para uma lista nova.
+        day=86400; now=int(time.time())
+        self.import_list('Setembro','telefone\n5583911111111\n5583922222222\n5583933333333\n')
+        self.send(statuses=[self.status_to('wamid.s1','5583911111111',now-5*day),
+                            self.status_to('wamid.s2','5583922222222',now-5*day+30),
+                            self.status_to('wamid.s3','5583933333333',now-5*day+60)])
+        self.import_list('Outubro','telefone\n5583911111111\n5583944444444\n5583955555555\n')
+        self.assertEqual(self.campaign_of('wamid.s1'),'Setembro')
+        self.assertIn('Nada a corrigir',self.panel.get('/?aba=config&previa=1').get_data(as_text=True))
+    def test_resend_to_part_of_list_goes_to_resend_campaign(self):
+        day=86400; now=int(time.time())
+        self.import_list('Original','telefone\n5583911111111\n5583922222222\n5583933333333\n5583944444444\n')
+        self.send(statuses=[self.status_to('wamid.o3','5583933333333',now-2*day),self.status_to('wamid.o4','5583944444444',now-2*day+10)])
+        # Os dois primeiros falharam antes de sair (#2) e foram reenviados numa campanha própria.
+        self.send(statuses=[self.status_to('wamid.r1','5583911111111',now-100),self.status_to('wamid.r2','5583922222222',now-90)])
+        self.import_list('Reenvio','telefone\n5583911111111\n5583922222222\n')
+        self.assertEqual(self.campaign_of('wamid.r1'),'Reenvio')
+        self.assertEqual(self.campaign_of('wamid.r2'),'Reenvio')
+        self.assertEqual(self.campaign_of('wamid.o3'),'Original')
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])

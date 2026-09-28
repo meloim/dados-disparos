@@ -454,53 +454,56 @@ def create_apps(db_path=None, settings=None):
             contact = db.execute('SELECT id FROM contacts WHERE campaign=? AND phone=?',(window['campaign'],ev['phone'])).fetchone()
             attach(db, contact['id'], ev['context'])
 
-    BURST = 12 * 3600  # Envios de um mesmo disparo saem juntos; além disso não conta como o mesmo disparo.
+    BURST = 3 * 3600  # Envios até 3 h antes/depois contam como o mesmo disparo.
 
     def reprocess(db, apply=True):
-        """Refaz a ligação envio → contato de todos os envios automáticos.
+        """Refaz a ligação envio → contato dos envios cujo telefone está em mais de uma campanha.
 
-        Regra: um envio pertence a um contato com o mesmo telefone; listas importadas ganham
-        da captura por horário; se o telefone está em várias campanhas, vence aquela cujos
-        outros envios saíram mais perto no tempo (o mesmo disparo). Envios movidos à mão
-        ficam como estão. Devolve o resumo [(de, para, quantidade)].
+        Um disparo manda para uma lista inteira quase ao mesmo tempo. Para cada envio em dúvida,
+        junta os números disparados perto dele (±3 h) e escolhe a campanha cuja lista mais se
+        parece com esse conjunto (índice de Jaccard). Assim um envio antigo não é puxado para
+        uma lista nova que só compartilha alguns números, e um reenvio para parte da lista vai
+        para a campanha do reenvio. Sem semelhança nenhuma, o envio fica onde está.
+        Envios movidos à mão não mudam. Devolve o resumo [(de, para, quantidade)].
         """
+        from bisect import bisect_left, bisect_right
         contacts = {c['id']: c for c in db.execute('SELECT id,campaign,phone,source FROM contacts').fetchall()}
-        by_key = {}
+        by_key, lists = {}, {}
         for c in contacts.values():
-            by_key.setdefault(phone_key(c['phone']), []).append(c)
+            key = phone_key(c['phone'])
+            by_key.setdefault(key, []).append(c)
+            lists.setdefault(c['campaign'], set()).add(key)
         pinned = {r['id'] for r in db.execute('SELECT id FROM pinned_outbounds').fetchall()}
         owner = {r['id']: r['contact_id'] for r in db.execute('SELECT id,contact_id FROM outbounds').fetchall()}
         sends = {}  # contexto -> horário do envio e telefone
         for r in db.execute("""SELECT context, MIN(ts) AS ts, MIN(phone) AS phone FROM events WHERE kind='status'
                 AND context IS NOT NULL AND COALESCE(association,'')<>? GROUP BY context""",(DISCARDED,)).fetchall():
             sends[r['context']] = {'ts': r['ts'], 'key': phone_key(r['phone'])}
-        def candidates(ctx):
-            found = by_key.get(sends[ctx]['key'], [])
-            listed = [c for c in found if c['source'] != 'horario']
-            return listed or found
-        # 1ª passada: envios sem dúvida (um só contato possível) viram âncoras de horário por campanha.
-        choice, anchors = {}, {}
-        for ctx in sends:
-            if ctx in pinned:
-                choice[ctx] = owner.get(ctx)
-            else:
-                cands = candidates(ctx)
-                if len(cands) == 1:
-                    choice[ctx] = cands[0]['id']
-            if choice.get(ctx) in contacts:
-                anchors.setdefault(contacts[choice[ctx]]['campaign'], []).append((sends[ctx]['ts'], sends[ctx]['key']))
-        # 2ª passada: telefone em várias campanhas → a do disparo mais próximo no tempo.
+        timeline = sorted((s['ts'], s['key']) for s in sends.values())
+        times = [t for t, _ in timeline]
+        def burst(ts):
+            return {k for _, k in timeline[bisect_left(times, ts - BURST):bisect_right(times, ts + BURST)]}
+        choice = {}
         for ctx, s in sends.items():
-            if ctx in choice:
+            if ctx in pinned:
                 continue
-            cands = candidates(ctx)
+            cands = by_key.get(s['key'], [])
+            if len(cands) == 1:
+                choice[ctx] = cands[0]['id']
+                continue
             if not cands:
                 continue
-            def distance(c):
-                near = [abs(t - s['ts']) for t, k in anchors.get(c['campaign'], []) if k != s['key']]
-                return min(near) if near and min(near) <= BURST else float('inf')
+            around = burst(s['ts'])
+            def score(c):
+                members = lists[c['campaign']]
+                return len(around & members) / len(around | members)
             current = owner.get(ctx)
-            ranked = sorted(cands, key=lambda c: (distance(c), c['id'] != current, -c['id']))
+            best = max(score(c) for c in cands)
+            if best == 0 and current in {c['id'] for c in cands}:
+                choice[ctx] = current
+                continue
+            # Empate: lista importada antes de captura por horário, depois quem já tem, depois a mais nova.
+            ranked = sorted(cands, key=lambda c: (-round(score(c), 6), c['source'] == 'horario', c['id'] != current, -c['id']))
             choice[ctx] = ranked[0]['id']
         moves = {}
         changed = [ctx for ctx, cid in choice.items() if cid and owner.get(ctx) != cid and ctx not in pinned]
