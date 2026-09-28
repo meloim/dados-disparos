@@ -89,6 +89,8 @@ button.ok{background:var(--ok)}
 .tipbox.show{opacity:1;transform:none}
 .tipbox .tip-title{display:flex;gap:6px;align-items:flex-start;font-weight:700;color:var(--danger);font-size:14px}
 .tipbox .tip-title svg{flex:none;width:16px;height:16px;margin-top:1px}
+.tipbox.info{border-left-color:var(--wa-teal)}
+.tipbox.info .tip-title{color:var(--text)}
 .tipbox .tip-label{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:700;margin:10px 0 2px}
 .tipbox p{margin:0}
 .tipbox .tip-tech{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);font-family:ui-monospace,Consolas,monospace;overflow-wrap:anywhere}

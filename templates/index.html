@@ -27,11 +27,20 @@
         data-tip-title="{{ fail.reason }}" data-tip-body="{{ fail.tip }}" data-tip-tech="{{ fail.tech }}">
     {{ tick('failed') }}<span>{{ label }} <svg class="help-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.3 6.2a1.8 1.8 0 113 1.4c-.7.4-1.3.8-1.3 1.6M8 11.3v.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>{% if when %}<small>{{ when }}</small>{% endif %}</span>
   </span>
+  {%- elif status == 'none' -%}
+  {# Erros que a Meta devolve antes de a mensagem existir (ex.: "#2 Service temporarily unavailable")
+     só aparecem na Datafy: nenhum webhook chega para esses números. #}
+  <span class="state s-none has-tip" tabindex="0" role="button" data-tip-kind="info" aria-label="{{ label }}"
+        data-tip-title="Sem registro de envio"
+        data-tip-body="O painel não recebeu nenhum envio ligado a este número nesta campanha. Pode ser que o disparo tenha sido recusado antes de sair (por exemplo, o erro “#2 Service temporarily unavailable” da Meta), que ainda não tenha chegado nele, ou que o envio tenha sido ligado a outra campanha. Confira o status na Datafy."
+        data-tip-tech="Nenhum evento de status (sent, delivered, read, failed) recebido pelo webhook.">
+    {{ tick('none') }}<span>{{ label }} <svg class="help-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.3 6.2a1.8 1.8 0 113 1.4c-.7.4-1.3.8-1.3 1.6M8 11.3v.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+  </span>
   {%- else -%}
   <span class="state s-{{ status }}">{{ tick(status) }}<span>{{ label }}{% if when %}<small>{{ when }}</small>{% endif %}</span></span>
   {%- endif -%}
 {%- endmacro %}
-{% set status_label ={'sent':'Enviada','delivered':'Entregue','read':'Lida','failed':'Falhou','none':'Não informado'} %}
+{% set status_label ={'sent':'Enviada','delivered':'Entregue','read':'Lida','failed':'Falhou','none':'Sem registro de envio'} %}
 
 <header class="top">
   <div class="top-inner">
@@ -124,11 +133,13 @@
 {% endif %}
 
 <section class="card" id="contacts">
-  {% set n_pending = rows|selectattr('status','in',['sent','none'])|list|length %}
+  {% set n_pending = rows|selectattr('status','equalto','sent')|list|length %}
+  {% set n_none = rows|selectattr('status','equalto','none')|list|length %}
   <div class="filter-row">
   <div class="filters">
     <button type="button" class="chip" data-filter="all">Todos <b>{{ rows|length }}</b></button>
     <button type="button" class="chip" data-filter="pending">Aguardando entrega <b>{{ n_pending }}</b></button>
+    {% if n_none %}<button type="button" class="chip" data-filter="none" title="A Datafy não avisou envio para esses números">Sem registro de envio <b>{{ n_none }}</b></button>{% endif %}
     <button type="button" class="chip" data-filter="delivered">Entregues <b>{{ totals.delivered }}</b></button>
     <button type="button" class="chip" data-filter="read">Lidas <b>{{ totals.read }}</b></button>
     <button type="button" class="chip" data-filter="replied">Responderam <b>{{ totals.replied }}</b></button>

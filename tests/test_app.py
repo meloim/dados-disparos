@@ -271,6 +271,13 @@ class Integration(unittest.TestCase):
         charts=self.panel.get('/?aba=graficos&periodo=7').get_data(as_text=True)
         self.assertIn('"label": "Taxa de leitura", "n": 1',charts.replace('"key": "read", ',''))
         self.assertIn('"reads": 0',charts)  # Curva de leitura usa só confirmações reais.
+    def test_contact_without_any_send_event(self):
+        self.import_list('Lista','telefone\n5511911111111\n5511922222222\n')
+        self.send(statuses=[self.status_to('wamid.1','5511911111111',int(time.time()))])
+        html=self.panel.get('/?campanha=Lista').get_data(as_text=True)
+        self.assertIn('Sem registro de envio',html)
+        self.assertIn('data-filter="none"',html)
+        self.assertIn('Service temporarily unavailable',html)
     def test_rules_persist_and_reject_overlap(self):
         self.panel.post('/regras',data={'csrf':self.csrf,'aceite':'YES','recusa':'yes'})
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM preferences'),0)

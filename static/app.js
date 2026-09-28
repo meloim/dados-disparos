@@ -11,7 +11,7 @@
       var ok = filter === 'all' ||
         (filter.indexOf('r:') === 0 && tr.dataset.result === filter.slice(2)) ||
         (filter === 'replied' && replied) ||
-        (filter === 'pending' && (st === 'sent' || st === 'none')) ||
+        (filter === 'pending' && st === 'sent') ||
         (filter === 'delivered' && (st === 'delivered' || st === 'read')) ||
         (filter === st);
       if (ok && query) ok = tr.dataset.search.indexOf(query) !== -1;
@@ -104,7 +104,7 @@
     if (tipFor === target) return;
     hideTip();
     tipFor = target;
-    tipbox = el('div', 'tipbox');
+    tipbox = el('div', 'tipbox' + (target.dataset.tipKind ? ' ' + target.dataset.tipKind : ''));
     tipbox.setAttribute('role', 'tooltip');
     var title = el('div', 'tip-title');
     title.innerHTML = '<svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 4.8v5M9 12.4v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';

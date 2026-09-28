@@ -526,7 +526,7 @@ def create_apps(db_path=None, settings=None):
             row['read_inferred'] = bool(replies) and 'read' not in statuses and 'failed' not in statuses
             if row['read_inferred']:
                 statuses |= {'delivered', 'read'}
-            row['status'], row['delivery'] = next(((code,label) for code,label in [('read','Lida'),('delivered','Entregue'),('failed','Falhou'),('sent','Enviada')] if code in statuses), ('none','Não informado'))
+            row['status'], row['delivery'] = next(((code,label) for code,label in [('read','Lida'),('delivered','Entregue'),('failed','Falhou'),('sent','Enviada')] if code in statuses), ('none','Sem registro de envio'))
             status_ts = [e['ts'] for e in evs if e['kind']=='status' and e['body']==row['status']]
             if row['read_inferred']:
                 status_ts = [replies[0]['ts']]
@@ -956,7 +956,7 @@ def create_apps(db_path=None, settings=None):
             summary.append(row)
         for k,label in LABELS.items():
             summary.append([label,totals[k],totals[k]/totals['total'] if totals['total'] else 0])
-        summary.append(['Base importada não comprova envio. Sem status significa não informado.'])
+        summary.append(['"Sem registro de envio": a Datafy não avisou envio para o número (ex.: recusado pela Meta antes de sair). Confira na Datafy.'])
         summary.append(['Respostas sem vínculo não entram nos resultados por campanha.'])
         summary.append(['Resultado considera a resposta vinculada mais recente, inclusive revisão.'])
         for r in range(5,8+len(LABELS)):
