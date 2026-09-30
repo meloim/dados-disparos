@@ -294,6 +294,10 @@ def create_apps(db_path=None, settings=None):
         INSERT INTO outbounds SELECT outbound,id FROM contacts WHERE outbound IS NOT NULL ON CONFLICT DO NOTHING;
         CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS pinned_outbounds (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS raw_webhooks (
+          id TEXT PRIMARY KEY, received_at INTEGER NOT NULL, body TEXT NOT NULL,
+          processed_at INTEGER, error TEXT);
+        CREATE INDEX IF NOT EXISTS raw_webhooks_pending ON raw_webhooks(processed_at);
         '''
         if database_url:
             schema = schema.replace('id INTEGER PRIMARY KEY', 'id BIGSERIAL PRIMARY KEY')
@@ -469,6 +473,7 @@ def create_apps(db_path=None, settings=None):
             if database_url:
                 # Vários processos (workers) podem tentar ao mesmo tempo: um de cada vez.
                 db.execute('SELECT pg_advisory_xact_lock(424242)')
+            ingest_raw(db)
             capture_sends(db)
             link_by_context(db)
 
@@ -594,69 +599,84 @@ def create_apps(db_path=None, settings=None):
             print(f'[webhook 401] assinatura não confere: recebida={sig[:16]!r}... '
                   f'secret_prefixo={secret[:9]!r} secret_len={len(secret)} corpo={len(raw)} bytes', flush=True)
             abort(401)
-        try:
-            payload = json.loads(raw)
-            records = []
-            for entry in payload.get('entry', []):
-                for change in entry.get('changes', []):
-                    value = change.get('value', {})
-                    if change.get('field') != 'messages':
+        # Guarda o aviso inteiro, do jeito que chegou, e responde. Nada é interpretado nem
+        # descartado aqui: se a interpretação mudar, os avisos originais podem ser relidos.
+        delivery = request.headers.get('x-datafy-delivery-id') or 'sha256:' + hashlib.sha256(raw).hexdigest()
+        with connect() as db:
+            db.execute('''INSERT INTO raw_webhooks(id,received_at,body) VALUES(?,?,?)
+                ON CONFLICT(id) DO NOTHING''',(delivery, int(time.time()), raw.decode('utf-8', 'replace')))
+        if sync_processing:
+            process_pending()
+        else:
+            wake.set()
+        return {'ok': True}, 200
+
+    def parse_payload(text):
+        """Transforma um aviso cru da Datafy em linhas da tabela events."""
+        channel = str(settings.get('phone_number_id', '')).strip()
+        payload = json.loads(text)
+        records = []
+        for entry in payload.get('entry', []):
+            for change in entry.get('changes', []):
+                value = change.get('value', {})
+                if change.get('field') != 'messages':
+                    continue
+                number = str(value.get('metadata', {}).get('phone_number_id', ''))
+                if number != channel:
+                    continue
+                for msg in value.get('messages', []):
+                    kind = msg.get('type', '')
+                    choice = ''
+                    body = ''
+                    if kind == 'text':
+                        body = msg.get('text', {}).get('body', '')
+                    elif kind == 'button':
+                        button = msg.get('button', {})
+                        body = button.get('text', '')
+                        choice = button.get('payload') or body
+                    elif kind == 'interactive':
+                        inter = msg.get('interactive', {})
+                        button = inter.get(inter.get('type', ''), {})
+                        body = button.get('title', '')
+                        choice = button.get('id') or body
+                    elif kind in IGNORED_KINDS:
+                        continue  # Mensagem apagada, avisos do sistema: não são respostas.
+                    elif kind == 'reaction':
+                        # Reação com emoji na mensagem enviada (ex.: 👍) vale como resposta.
+                        reaction = msg.get('reaction', {})
+                        body = reaction.get('emoji', '')
+                        if not body:
+                            continue  # Reação removida.
+                        msg.setdefault('context', {'id': reaction.get('message_id')})
+                    else:
+                        body = MEDIA_LABELS.get(kind, '[Mensagem de tipo: '+kind+']')
+                    result = classify(choice, body) if kind in ('text','button','interactive','reaction') else 'revisar'
+                    context = msg.get('context', {}).get('id')
+                    records.append((number+':message:'+msg['id'], 'reply', phone(msg['from']), number,
+                        int(msg['timestamp']), context, str(body), str(choice), result, json.dumps(msg, ensure_ascii=False)))
+                for status in value.get('statuses', []):
+                    state = status.get('status', '')
+                    if state not in ('sent', 'delivered', 'read', 'failed'):
                         continue
-                    number = str(value.get('metadata', {}).get('phone_number_id', ''))
-                    if number != channel:
-                        continue
-                    for msg in value.get('messages', []):
-                        kind = msg.get('type', '')
-                        choice = ''
-                        body = ''
-                        if kind == 'text':
-                            body = msg.get('text', {}).get('body', '')
-                        elif kind == 'button':
-                            button = msg.get('button', {})
-                            body = button.get('text', '')
-                            choice = button.get('payload') or body
-                        elif kind == 'interactive':
-                            inter = msg.get('interactive', {})
-                            button = inter.get(inter.get('type', ''), {})
-                            body = button.get('title', '')
-                            choice = button.get('id') or body
-                        elif kind in IGNORED_KINDS:
-                            continue  # Mensagem apagada, avisos do sistema: não são respostas.
-                        elif kind == 'reaction':
-                            # Reação com emoji na mensagem enviada (ex.: 👍) vale como resposta.
-                            reaction = msg.get('reaction', {})
-                            body = reaction.get('emoji', '')
-                            if not body:
-                                continue  # Reação removida.
-                            msg.setdefault('context', {'id': reaction.get('message_id')})
-                        else:
-                            body = MEDIA_LABELS.get(kind, '[Mensagem de tipo: '+kind+']')
-                        result = classify(choice, body) if kind in ('text','button','interactive','reaction') else 'revisar'
-                        context = msg.get('context', {}).get('id')
-                        records.append((number+':message:'+msg['id'], 'reply', phone(msg['from']), number,
-                            int(msg['timestamp']), context, str(body), str(choice), result, json.dumps(msg, ensure_ascii=False)))
-                    for status in value.get('statuses', []):
-                        state = status.get('status', '')
-                        if state not in ('sent', 'delivered', 'read', 'failed'):
-                            continue
-                        records.append((number+':status:'+status['id']+':'+state, 'status',
-                            re.sub(r'\D', '', str(status.get('recipient_id', ''))), number,
-                            int(status['timestamp']), status['id'], state, '', '', json.dumps(status, ensure_ascii=False)))
-            # Só grava e responde: num disparo chegam centenas de avisos por minuto e a Datafy
-            # desiste depois de 20 s. A ligação com as campanhas roda em segundo plano.
-            with connect() as db:
-                for rec in records:
+                    records.append((number+':status:'+status['id']+':'+state, 'status',
+                        re.sub(r'\D', '', str(status.get('recipient_id', ''))), number,
+                        int(status['timestamp']), status['id'], state, '', '', json.dumps(status, ensure_ascii=False)))
+        return records
+
+    def ingest_raw(db):
+        """Interpreta os avisos crus ainda não lidos e grava os eventos. Erro fica anotado no aviso."""
+        now = int(time.time())
+        for row in db.execute('''SELECT id,body FROM raw_webhooks WHERE processed_at IS NULL
+                ORDER BY received_at LIMIT 5000''').fetchall():
+            try:
+                for rec in parse_payload(row['body']):
                     db.execute('''INSERT INTO events
                       (id,kind,phone,channel,ts,context,body,choice,result,raw) VALUES (?,?,?,?,?,?,?,?,?,?)
                       ON CONFLICT(id) DO NOTHING''', rec)
-            if records:
-                if sync_processing:
-                    process_pending()
-                else:
-                    wake.set()
-            return {'ok': True}, 200
-        except (ValueError, KeyError, TypeError, AttributeError):
-            return {'error': 'Formato de evento inválido'}, 400
+                db.execute('UPDATE raw_webhooks SET processed_at=?, error=NULL WHERE id=?',(now,row['id']))
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                print(f'[aviso {row["id"]}] não interpretado: {exc!r}', flush=True)
+                db.execute('UPDATE raw_webhooks SET processed_at=?, error=? WHERE id=?',(now,repr(exc)[:500],row['id']))
 
     def report(campaign=''):
         with connect() as db:
@@ -1086,6 +1106,11 @@ def create_apps(db_path=None, settings=None):
         if request.form.get('acao') != 'aplicar':
             return redirect(url_for('index', aba='config', previa=1, _anchor='reprocessar'))
         with connect() as db:
+            # Relê todos os avisos originais: recupera o que uma versão anterior deixou de interpretar.
+            db.execute('UPDATE raw_webhooks SET processed_at=NULL')
+            ingest_raw(db)
+            capture_sends(db)
+            link_by_context(db)
             summary = reprocess(db)
         moved = sum(n for _, _, n in summary)
         flash(f'{moved} envio(s) religado(s) à campanha certa.' if moved else 'Nada a corrigir: todos os envios já estavam na campanha certa.')
@@ -1185,7 +1210,8 @@ def create_apps(db_path=None, settings=None):
     @panel.get('/backup')
     def backup():
         if database_url:
-            tables = ('contacts','events','audit','campaign_windows','outbounds','preferences')
+            tables = ('contacts','events','audit','campaign_windows','outbounds','preferences',
+                      'pinned_outbounds','raw_webhooks')
             snapshot = {'generated_at': int(time.time()), 'tables': {}}
             with connect() as source:
                 for table in tables:

@@ -364,6 +364,26 @@ class Integration(unittest.TestCase):
         html=self.panel.get('/?aba=config&diag=5583991131671').get_data(as_text=True)
         self.assertIn('Entregue',html)
         self.assertIn('Lista',html)
+    def signed_post(self,body,delivery=None):
+        stamp=str(int(time.time()))
+        sig='sha256='+hmac.new(self.settings['webhook_secret'].encode(),stamp.encode()+b'.'+body,hashlib.sha256).hexdigest()
+        headers={'x-datafy-timestamp':stamp,'x-datafy-signature-256':sig}
+        if delivery: headers['x-datafy-delivery-id']=delivery
+        return self.hook.post('/webhook/datafy',data=body,content_type='application/json',headers=headers)
+    def test_every_webhook_is_stored_raw(self):
+        # Formato inesperado: responde 200, guarda o original e anota o erro (nada se perde).
+        self.assertEqual(self.signed_post(b'{"entry": "formato novo"}').status_code,200)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM raw_webhooks'),1)
+        self.assertIsNotNone(self.scalar('SELECT error FROM raw_webhooks'))
+        # Evento de outro tipo (ex.: eco de mensagens do celular) também fica guardado.
+        self.signed_post(json.dumps({'entry':[{'changes':[{'field':'smb_message_echoes','value':{}}]}]}).encode())
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM raw_webhooks'),2)
+        # A mesma entrega repetida pela Datafy não duplica.
+        body=json.dumps({'entry':[{'changes':[{'field':'messages','value':{'metadata':{'phone_number_id':'123'},
+            'statuses':[self.status_to('wamid.x','5511911111111',int(time.time()))]}}]}]}).encode()
+        self.signed_post(body,'entrega-1');self.signed_post(body,'entrega-1')
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM raw_webhooks'),3)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM events WHERE context='wamid.x'"),1)
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])
