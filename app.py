@@ -190,6 +190,20 @@ def date_text(value):
         return ''
     return brasilia(value).strftime('%d/%m/%Y %H:%M:%S')
 
+def ago(ts, now=None):
+    """'agora', 'há 5 min', 'há 2 h', 'há 3 dias'."""
+    if not ts:
+        return 'nunca'
+    s = max(0, int((now or time.time()) - ts))
+    if s < 60:
+        return 'agora'
+    if s < 3600:
+        return f'há {s // 60} min'
+    if s < 86400:
+        return f'há {s // 3600} h'
+    days = s // 86400
+    return f'há {days} dia' + ('' if days == 1 else 's')
+
 def duration_text(seconds):
     if seconds is None:
         return ''
@@ -703,6 +717,7 @@ def create_apps(db_path=None, settings=None):
             row['status_when'] = date_text(status_ts[-1]) if status_ts else ''
             row['replied'] = bool(replies)
             row['last_ts'] = max((e['ts'] for e in evs), default=0)
+            row['first_send'] = min((e['ts'] for e in evs if e['kind'] == 'status'), default=0)
             row['phone_fmt'] = pretty_phone(row['phone'])
             row['name_fmt'] = '' if row['name']==row['phone'] else row['name']
             failed = [e for e in evs if e['kind']=='status' and e['body']=='failed']
@@ -903,6 +918,19 @@ def create_apps(db_path=None, settings=None):
         unlinked_sends = sorted(groups.values(), key=lambda g: g['last'], reverse=True)[:500]
         rules = get_rules()
         show_results = bool(totals['aceitou'] or totals['recusou'] or rules.get('aceite') or rules.get('recusa'))
+        # Faixa de recebimento: para comparar o painel com o "Enviados" da Datafy.
+        now = int(time.time())
+        with connect() as db:
+            last_raw = max(db.execute('SELECT MAX(received_at) AS t FROM raw_webhooks').fetchone()['t'] or 0,
+                           db.execute('SELECT MAX(ts) AS t FROM events').fetchone()['t'] or 0) or None
+            recent = db.execute('SELECT COUNT(*) AS n FROM raw_webhooks WHERE received_at>=?',(now - 600,)).fetchone()['n']
+            pending = db.execute('SELECT COUNT(*) AS n FROM raw_webhooks WHERE processed_at IS NULL').fetchone()['n']
+            broken = db.execute('SELECT COUNT(*) AS n FROM raw_webhooks WHERE error IS NOT NULL').fetchone()['n']
+        sends = [r['first_send'] for r in rows if r['first_send']]
+        health = {'last': last_raw, 'ago': ago(last_raw, now), 'recent': recent, 'pending': pending, 'broken': broken,
+                  'stale': not last_raw or now - last_raw > 6 * 3600,
+                  'with_send': len(sends), 'total': len(rows), 'none': sum(r['status'] == 'none' for r in rows),
+                  'first_send': date_text(min(sends))[:16] if sends else ''}
         period = request.args.get('periodo', '30')
         period = period if period in ('7', '30', '90', 'tudo') else '30'
         charts = None
@@ -932,7 +960,7 @@ def create_apps(db_path=None, settings=None):
                 e['pinned'] = e['context'] in pinned
             diag = {'query': diag_q, 'key': key, 'contacts': found, 'events': evs}
         return render_template('index.html', rows=rows, totals=totals, campaigns=campaigns,
-            charts=charts, period=period, preview=preview, diag=diag,
+            charts=charts, period=period, preview=preview, diag=diag, health=health,
             campaign=campaign, inbox=inbox, outside=outside, labels=LABELS, date_text=date_text,
             configured=bool(settings.get('webhook_secret') and settings.get('phone_number_id')),
             last=date_text(last), rules=rules, active=active, show_results=show_results,

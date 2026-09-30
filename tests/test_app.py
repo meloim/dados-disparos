@@ -384,6 +384,14 @@ class Integration(unittest.TestCase):
         self.signed_post(body,'entrega-1');self.signed_post(body,'entrega-1')
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM raw_webhooks'),3)
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM events WHERE context='wamid.x'"),1)
+    def test_reception_strip(self):
+        now=int(time.time())
+        self.import_list('Lista','telefone\n5583911111111\n5583922222222\n')
+        self.send(statuses=[self.status_to('wamid.1','5583911111111',now-30)])
+        html=self.panel.get('/?campanha=Lista').get_data(as_text=True)
+        self.assertIn('Último aviso da Datafy:</b> agora',html)
+        self.assertIn('<b>1 de 2</b> desta campanha com envio registrado',html)
+        self.assertIn('1 sem registro',html)
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])

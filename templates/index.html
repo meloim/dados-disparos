@@ -83,6 +83,17 @@
 </div>
 
 <div id="live">
+{# Faixa de recebimento: mostra se os avisos da Datafy estão chegando e quanto já entrou na campanha. #}
+<div class="recv {{ 'warn' if health.stale or health.broken else 'ok' }}" role="status">
+  <span class="recv-dot" aria-hidden="true"></span>
+  <span><b>Último aviso da Datafy:</b> {{ health.ago }}{% if health.recent %} · <b>{{ health.recent }}</b> nos últimos 10 min{% endif %}</span>
+  {% if health.pending %}<span class="recv-note">⏳ organizando {{ health.pending }} aviso(s) recém-chegado(s)…</span>{% endif %}
+  {% if campaign and health.total %}
+  <span class="recv-camp"><b>{{ health.with_send }} de {{ health.total }}</b> desta campanha com envio registrado{% if health.first_send %} (disparo em {{ health.first_send }}){% endif %}{% if health.none %} · <a href="#contacts" data-filter="none">{{ health.none }} sem registro</a>{% endif %}.
+    <span class="muted">Na Datafy, “Enviados” deve bater com esse número, descontando os que deram erro lá.</span></span>
+  {% endif %}
+  {% if health.broken %}<span class="recv-note">⚠️ {{ health.broken }} aviso(s) em formato que o painel não entendeu. Estão guardados. Avise o suporte.</span>{% endif %}
+</div>
 {% set base = totals.sent %}
 <div class="funnel">
   <button type="button" class="stat" data-filter="all">
