@@ -4,7 +4,8 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --workers 2 --threads 4 --timeout 30
+    # Muitas threads: num disparo a Datafy manda centenas de avisos por minuto.
+    startCommand: gunicorn app:app --workers 2 --threads 16 --timeout 60
     healthCheckPath: /healthz
     envVars:
       - key: RENDER

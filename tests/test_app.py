@@ -16,7 +16,8 @@ from app import create_apps, create_render_app
 class Integration(unittest.TestCase):
     def setUp(self):
         self.db = Path(__file__).resolve().parent / ('test-'+uuid.uuid4().hex+'.sqlite3')
-        self.settings = {'webhook_secret':'test-only-secret','phone_number_id':'123','aceite':['accept'],'recusa':['reject']}
+        self.settings = {'webhook_secret':'test-only-secret','phone_number_id':'123','aceite':['accept'],'recusa':['reject'],
+                         'sync_processing':True}
         panel, webhook = create_apps(self.db,self.settings)
         panel.testing = webhook.testing = True
         self.panel = panel.test_client()

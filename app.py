@@ -438,11 +438,13 @@ def create_apps(db_path=None, settings=None):
         for ev in db.execute("""SELECT * FROM events WHERE kind='status' AND contact_id IS NULL
                 AND context IS NOT NULL AND COALESCE(association,'')<>? ORDER BY ts""",(DISCARDED,)).fetchall():
             first.setdefault(ev['context'], ev)
+        known = {r['id'] for r in db.execute('SELECT id FROM outbounds').fetchall()}  # Uma consulta só.
         for ev in sorted(first.values(), key=lambda e: e['ts'], reverse=True):
             if not 10 <= len(ev['phone'] or '') <= 15:
                 continue
-            if db.execute('SELECT 1 FROM outbounds WHERE id=?',(ev['context'],)).fetchone():
+            if ev['context'] in known:
                 continue
+            known.add(ev['context'])
             listed = waiting.get(phone_key(ev['phone']))
             if listed:
                 attach(db, listed.pop(0), ev['context'])
@@ -457,6 +459,28 @@ def create_apps(db_path=None, settings=None):
               VALUES(?,?,?,'horario') ON CONFLICT(campaign,phone) DO NOTHING''',(window['campaign'],ev['phone'],ev['phone']))
             contact = db.execute('SELECT id FROM contacts WHERE campaign=? AND phone=?',(window['campaign'],ev['phone'])).fetchone()
             attach(db, contact['id'], ev['context'])
+
+    # Processamento em segundo plano dos avisos gravados pelo webhook.
+    sync_processing = bool(settings.get('sync_processing'))  # Testes processam na hora.
+    wake = threading.Event()
+
+    def process_pending():
+        with connect() as db:
+            if database_url:
+                # Vários processos (workers) podem tentar ao mesmo tempo: um de cada vez.
+                db.execute('SELECT pg_advisory_xact_lock(424242)')
+            capture_sends(db)
+            link_by_context(db)
+
+    def processor():
+        while True:
+            if wake.wait(60):
+                time.sleep(2)  # Junta a rajada de avisos de um disparo num lote só.
+                wake.clear()
+            try:
+                process_pending()
+            except Exception as exc:  # Nunca derruba o processamento por causa de um lote.
+                print(f'[processamento] {exc!r}', flush=True)
 
     BURST = 3 * 3600  # Envios até 3 h antes/depois contam como o mesmo disparo.
 
@@ -618,13 +642,18 @@ def create_apps(db_path=None, settings=None):
                         records.append((number+':status:'+status['id']+':'+state, 'status',
                             re.sub(r'\D', '', str(status.get('recipient_id', ''))), number,
                             int(status['timestamp']), status['id'], state, '', '', json.dumps(status, ensure_ascii=False)))
+            # Só grava e responde: num disparo chegam centenas de avisos por minuto e a Datafy
+            # desiste depois de 20 s. A ligação com as campanhas roda em segundo plano.
             with connect() as db:
                 for rec in records:
                     db.execute('''INSERT INTO events
                       (id,kind,phone,channel,ts,context,body,choice,result,raw) VALUES (?,?,?,?,?,?,?,?,?,?)
                       ON CONFLICT(id) DO NOTHING''', rec)
-                capture_sends(db)
-                link_by_context(db)
+            if records:
+                if sync_processing:
+                    process_pending()
+                else:
+                    wake.set()
             return {'ok': True}, 200
         except (ValueError, KeyError, TypeError, AttributeError):
             return {'error': 'Formato de evento inválido'}, 400
@@ -818,6 +847,7 @@ def create_apps(db_path=None, settings=None):
 
     @panel.get('/')
     def index():
+        process_pending()  # Garante a tela em dia mesmo se o segundo plano ainda não rodou.
         tab = request.args.get('aba') if request.args.get('aba') in ('config', 'graficos') else 'painel'
         all_rows = report()[0]
         with connect() as db:
@@ -1106,6 +1136,7 @@ def create_apps(db_path=None, settings=None):
     def export():
         def append(ws, values):
             ws.append([re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', v) if isinstance(v,str) else v for v in values])
+        process_pending()
         campaign = request.args.get('campanha','')
         rows, totals = report(campaign)
         wb = Workbook()
@@ -1184,6 +1215,8 @@ def create_apps(db_path=None, settings=None):
         link_by_context(db)
         reclassify(db)
 
+    if not sync_processing:
+        threading.Thread(target=processor, name='processamento', daemon=True).start()
     return panel, webhook
 
 def create_render_app(db_path=None, settings=None):
