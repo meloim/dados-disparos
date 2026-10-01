@@ -387,7 +387,10 @@
   {% else %}
     <div class="status-box">
       <b>{{ preview|sum(attribute=2) }} envio(s) vão mudar de campanha:</b>
-      <ul class="moves">{% for before, after, n in preview %}<li><b>{{ n }}</b> de “{{ before }}” → para “{{ after }}”</li>{% endfor %}</ul>
+      <ul class="moves">{% for before, after, n, phones in preview %}<li><b>{{ n }}</b> de “{{ before }}” → para “{{ after }}”
+        <div class="move-phones">{% for p in phones %}<a href="{{ url_for('index', aba='config', diag=p.phone) }}#diagnostico">{{ p.phone }}</a>{% if p.second %}<small> (2º envio para a mesma pessoa)</small>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}{% if n > phones|length %} e mais {{ n - phones|length }}{% endif %}</div></li>{% endfor %}</ul>
+      {% set seconds = preview|map(attribute=3)|sum(start=[])|selectattr('second')|list|length %}
+      {% if seconds %}<p class="help">“2º envio para a mesma pessoa”: o número já tinha uma mensagem nesta campanha (estava repetido na lista ou foi disparado duas vezes). O envio entra na campanha, mas o total de pessoas não muda, por isso a Datafy pode mostrar 1 envio a mais que o painel.</p>{% endif %}
     </div>
     <form action="/reprocessar" method="post" class="row"><input type="hidden" name="csrf" value="{{session.csrf}}">
       <button name="acao" value="aplicar">Aplicar correção</button>

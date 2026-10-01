@@ -392,6 +392,15 @@ class Integration(unittest.TestCase):
         self.assertIn('Último aviso da Datafy:</b> agora',html)
         self.assertIn('<b>1 de 2</b> desta campanha com envio registrado',html)
         self.assertIn('1 sem registro',html)
+    def test_second_send_to_same_person_joins_campaign(self):
+        # Datafy disparou duas vezes para o mesmo número (repetido no CSV dela): 2 envios, 1 pessoa.
+        now=int(time.time())
+        self.import_list('CE','telefone\n5585985042473\n5585911111111\n')
+        self.send(statuses=[self.status_to('wamid.a','558585042473',now-100),self.status_to('wamid.b','558585042473',now-99),
+                            self.status_to('wamid.c','5585911111111',now-98)])
+        self.assertEqual(self.campaign_of('wamid.b'),'CE')
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM events WHERE contact_id IS NULL"),0)
+        self.assertIn('<b>2 de 2</b>',self.panel.get('/?campanha=CE').get_data(as_text=True))
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])

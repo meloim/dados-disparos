@@ -159,6 +159,8 @@ tbody tr:hover{background:var(--surface-2)}
 .status-box b{display:block}
 .status-box ul.moves{margin:8px 0 0;padding-left:18px}
 .status-box ul.moves b{display:inline}
+.move-phones{font-size:12px;margin-top:2px}
+.move-phones a{color:var(--wa-teal)}
 .help{font-size:13px;color:var(--muted);margin:8px 0 0}
 .reply{border-top:1px solid var(--line);padding:14px 0}
 .reply:first-of-type{border-top:0}

@@ -449,9 +449,11 @@ def create_apps(db_path=None, settings=None):
         # Entrega/leitura podem chegar dias depois e nunca escolhem campanha.
         # Se o 'sent' se perdeu, a entrega/leitura liga o envio a uma lista importada
         # (nunca à captura por horário). O reprocessamento corrige depois quem ficou na lista errada.
-        waiting = {}
-        for c in db.execute("SELECT id,phone FROM contacts WHERE outbound IS NULL AND COALESCE(source,'lista')<>'horario' ORDER BY id DESC").fetchall():
-            waiting.setdefault(phone_key(c['phone']), []).append(c['id'])
+        waiting, in_lists = {}, {}
+        for c in db.execute("SELECT id,phone,outbound FROM contacts WHERE COALESCE(source,'lista')<>'horario' ORDER BY id DESC").fetchall():
+            in_lists.setdefault(phone_key(c['phone']), []).append(c['id'])
+            if c['outbound'] is None:
+                waiting.setdefault(phone_key(c['phone']), []).append(c['id'])
         first = {}
         for ev in db.execute("""SELECT * FROM events WHERE kind='status' AND contact_id IS NULL
                 AND context IS NOT NULL AND COALESCE(association,'')<>? ORDER BY ts""",(DISCARDED,)).fetchall():
@@ -466,6 +468,11 @@ def create_apps(db_path=None, settings=None):
             listed = waiting.get(phone_key(ev['phone']))
             if listed:
                 attach(db, listed.pop(0), ev['context'])
+                continue
+            # Segundo envio para quem já recebeu: se o número está numa lista só, é dela.
+            only = in_lists.get(phone_key(ev['phone']), [])
+            if len(only) == 1:
+                attach(db, only[0], ev['context'])
                 continue
             if ev['body'] not in ('sent', 'failed'):
                 continue
@@ -554,11 +561,16 @@ def create_apps(db_path=None, settings=None):
             choice[ctx] = ranked[0]['id']
         moves = {}
         changed = [ctx for ctx, cid in choice.items() if cid and owner.get(ctx) != cid and ctx not in pinned]
+        has_send = set(owner.values())
         for ctx in changed:
             before = contacts[owner[ctx]]['campaign'] if owner.get(ctx) in contacts else 'Sem campanha'
-            after = contacts[choice[ctx]]['campaign']
-            moves[(before, after)] = moves.get((before, after), 0) + 1
-        summary = sorted(((a, b, n) for (a, b), n in moves.items()), key=lambda m: -m[2])
+            target = contacts[choice[ctx]]
+            # "Segundo envio": a pessoa já tinha um envio nesta campanha (número repetido na lista
+            # ou disparado duas vezes). Ele entra, mas a contagem de pessoas não muda.
+            moves.setdefault((before, target['campaign']), []).append(
+                {'phone': pretty_phone(target['phone']), 'second': choice[ctx] in has_send})
+        # Resumo: (de, para, quantidade, números).
+        summary = sorted(((a, b, len(p), p[:30]) for (a, b), p in moves.items()), key=lambda m: -m[2])
         if not apply or not changed:
             return summary
         touched = set()
@@ -1082,7 +1094,7 @@ def create_apps(db_path=None, settings=None):
                 msg += f' {linked} já com envio registrado.'
             if skipped:
                 msg += f' {skipped} linha(s) ignorada(s) por telefone inválido.'
-            relinked = sum(n for _, dest, n in moves if dest in names)
+            relinked = sum(m[2] for m in moves if m[1] in names)
             if relinked:
                 msg += f' {relinked} envio(s) que estavam em outra campanha foram trazidos para cá.'
             flash(msg)
@@ -1140,7 +1152,7 @@ def create_apps(db_path=None, settings=None):
             capture_sends(db)
             link_by_context(db)
             summary = reprocess(db)
-        moved = sum(n for _, _, n in summary)
+        moved = sum(m[2] for m in summary)
         flash(f'{moved} envio(s) religado(s) à campanha certa.' if moved else 'Nada a corrigir: todos os envios já estavam na campanha certa.')
         return redirect(url_for('index', aba='config', _anchor='reprocessar'))
 
