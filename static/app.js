@@ -10,6 +10,7 @@
       var st = tr.dataset.status, replied = tr.dataset.replied === '1';
       var ok = filter === 'all' ||
         (filter.indexOf('r:') === 0 && tr.dataset.result === filter.slice(2)) ||
+        (filter === 'multi' && tr.dataset.multi === '1') ||
         (filter === 'replied' && replied) ||
         (filter === 'pending' && st === 'sent') ||
         (filter === 'delivered' && (st === 'delivered' || st === 'read')) ||

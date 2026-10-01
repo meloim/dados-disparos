@@ -730,6 +730,8 @@ def create_apps(db_path=None, settings=None):
             row['replied'] = bool(replies)
             row['last_ts'] = max((e['ts'] for e in evs), default=0)
             row['first_send'] = min((e['ts'] for e in evs if e['kind'] == 'status'), default=0)
+            # Quantas mensagens diferentes a pessoa recebeu (ex.: número repetido na lista da Datafy).
+            row['messages'] = len({e['context'] for e in evs if e['kind'] == 'status' and e['context']})
             row['phone_fmt'] = pretty_phone(row['phone'])
             row['name_fmt'] = '' if row['name']==row['phone'] else row['name']
             failed = [e for e in evs if e['kind']=='status' and e['body']=='failed']
@@ -1094,6 +1096,15 @@ def create_apps(db_path=None, settings=None):
                 msg += f' {linked} já com envio registrado.'
             if skipped:
                 msg += f' {skipped} linha(s) ignorada(s) por telefone inválido.'
+            # Mesmo WhatsApp escrito de jeitos diferentes (com/sem 9 ou 55): a pessoa recebe duas vezes.
+            seen_keys = {}
+            for p in parsed:
+                seen_keys.setdefault((p[0], phone_key(p[2])), set()).add(p[2])
+            repeated = [pretty_phone(min(v)) for v in seen_keys.values() if len(v) > 1]
+            if repeated:
+                msg += (f' Atenção: {len(repeated)} número(s) aparecem mais de uma vez no arquivo, em formatos diferentes'
+                        f' ({", ".join(repeated[:5])}{"…" if len(repeated) > 5 else ""}). Corrija o CSV antes de disparar'
+                        ' na Datafy, senão a pessoa recebe a mensagem duas vezes.')
             relinked = sum(m[2] for m in moves if m[1] in names)
             if relinked:
                 msg += f' {relinked} envio(s) que estavam em outra campanha foram trazidos para cá.'

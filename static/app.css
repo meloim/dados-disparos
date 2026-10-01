@@ -145,6 +145,7 @@ tbody tr:hover{background:var(--surface-2)}
 .badge{padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600;background:var(--surface-2);color:var(--muted);white-space:nowrap}
 .badge.aceitou{background:var(--ok-bg);color:var(--ok)}
 .badge.recusou{background:var(--danger-bg);color:var(--danger)}
+.badge.multi{background:var(--warn-bg);color:var(--warn);margin-top:4px;display:inline-block;cursor:help}
 .badge.revisar{background:var(--warn-bg);color:var(--warn)}
 .empty{text-align:center;padding:40px 10px;color:var(--muted)}
 .empty svg{opacity:.5}

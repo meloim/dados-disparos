@@ -400,7 +400,15 @@ class Integration(unittest.TestCase):
                             self.status_to('wamid.c','5585911111111',now-98)])
         self.assertEqual(self.campaign_of('wamid.b'),'CE')
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM events WHERE contact_id IS NULL"),0)
-        self.assertIn('<b>2 de 2</b>',self.panel.get('/?campanha=CE').get_data(as_text=True))
+        html=self.panel.get('/?campanha=CE').get_data(as_text=True)
+        self.assertIn('<b>2 de 2</b>',html)
+        self.assertIn('2 mensagens',html)
+        self.assertIn('data-filter="multi"',html)
+    def test_import_warns_same_number_in_two_formats(self):
+        r=self.import_list('Dup','telefone\n5585985042473\n558585042473\n5585911111111\n')
+        with self.panel.session_transaction() as sess:
+            flashes=' '.join(m for _,m in sess.get('_flashes',[]))
+        self.assertIn('1 número(s) aparecem mais de uma vez',flashes)
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])
