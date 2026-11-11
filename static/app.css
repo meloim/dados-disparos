@@ -160,6 +160,11 @@ tbody tr:hover{background:var(--surface-2)}
 .status-box b{display:block}
 .status-box ul.moves{margin:8px 0 0;padding-left:18px}
 .status-box ul.moves b{display:inline}
+.server-title{font-size:14px;margin:16px 0 6px}
+.server{list-style:none;padding:0;margin:0;font-size:13px;display:grid;gap:4px}
+.server li.ok span{color:var(--ok)}
+.server li.bad{color:var(--danger)}
+.server small{display:block;margin-left:18px;color:var(--danger)}
 .move-phones{font-size:12px;margin-top:2px}
 .move-phones a{color:var(--wa-teal)}
 .help{font-size:13px;color:var(--muted);margin:8px 0 0}

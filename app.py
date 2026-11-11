@@ -28,6 +28,8 @@ except ImportError:  # Local mode does not require PostgreSQL.
     psycopg = None
 
 ROOT = Path(__file__).resolve().parent
+# Rodando na nuvem (Render ou Railway): ativa HTTPS seguro e o webhook no mesmo endereço do painel.
+HOSTED = bool(os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('RAILWAY_PROJECT_ID'))
 LABELS = {'pendente': 'Sem resposta', 'aceitou': 'Aceitou', 'recusou': 'Recusou', 'revisar': 'A classificar', 'outra': 'Outra resposta'}
 MANUAL = 'Revisão manual local'
 # Tipos de mensagem recebida que não são resposta de verdade.
@@ -329,7 +331,7 @@ def create_apps(db_path=None, settings=None):
     panel = Flask(__name__)
     panel.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
     panel.config.update(MAX_CONTENT_LENGTH=5*1024*1024, SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE='Strict', SESSION_COOKIE_SECURE=bool(os.environ.get('RENDER')))
+        SESSION_COOKIE_SAMESITE='Strict', SESSION_COOKIE_SECURE=HOSTED)
     webhook = Flask('datafy_webhook')
     webhook.config['MAX_CONTENT_LENGTH'] = 2*1024*1024
 
@@ -350,7 +352,7 @@ def create_apps(db_path=None, settings=None):
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Referrer-Policy'] = 'no-referrer'
         response.headers['Content-Security-Policy'] = "default-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'"
-        if os.environ.get('RENDER'):
+        if HOSTED:
             response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
         return response
 
@@ -894,6 +896,17 @@ def create_apps(db_path=None, settings=None):
             'failed': sum(reasons.values()), 'failed_pct': rate(sum(reasons.values()), base) or 0,
         }
 
+    def server_status():
+        """O que o servidor está enxergando (sem mostrar valores)."""
+        secret_key = os.environ.get('SECRET_KEY', '')
+        return [
+            ('Chave do webhook (DATAFY_WEBHOOK_SECRET)', bool(settings.get('webhook_secret')), 'faltando: a Datafy não consegue entregar os avisos'),
+            ('ID do número (DATAFY_PHONE_NUMBER_ID)', bool(settings.get('phone_number_id')), 'faltando: os avisos serão ignorados'),
+            ('Senha do painel (PANEL_PASSWORD)', bool(os.environ.get('PANEL_PASSWORD')) or not HOSTED, 'faltando: o painel está aberto sem login'),
+            ('Chave de sessão forte (SECRET_KEY)', len(secret_key) >= 32 or not HOSTED, 'fraca ou ausente: use um texto aleatório de 32+ caracteres'),
+            ('Banco PostgreSQL (DATABASE_URL)', bool(database_url) or not HOSTED, 'ausente: usando arquivo local, que é apagado a cada deploy'),
+        ]
+
     @panel.get('/')
     def index():
         process_pending()  # Garante a tela em dia mesmo se o segundo plano ainda não rodou.
@@ -974,7 +987,7 @@ def create_apps(db_path=None, settings=None):
                 e['pinned'] = e['context'] in pinned
             diag = {'query': diag_q, 'key': key, 'contacts': found, 'events': evs}
         return render_template('index.html', rows=rows, totals=totals, campaigns=campaigns,
-            charts=charts, period=period, preview=preview, diag=diag, health=health,
+            charts=charts, period=period, preview=preview, diag=diag, health=health, server=server_status(),
             campaign=campaign, inbox=inbox, outside=outside, labels=LABELS, date_text=date_text,
             configured=bool(settings.get('webhook_secret') and settings.get('phone_number_id')),
             last=date_text(last), rules=rules, active=active, show_results=show_results,
@@ -1302,7 +1315,7 @@ def create_render_app(db_path=None, settings=None):
     return panel
 
 # Gunicorn entry point used by Render.
-app = create_render_app() if os.environ.get('RENDER') else None
+app = create_render_app() if HOSTED else None
 
 if __name__ == '__main__':
     settings_path = ROOT / 'config.json'

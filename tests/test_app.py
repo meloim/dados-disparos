@@ -409,6 +409,29 @@ class Integration(unittest.TestCase):
         with self.panel.session_transaction() as sess:
             flashes=' '.join(m for _,m in sess.get('_flashes',[]))
         self.assertIn('1 número(s) aparecem mais de uma vez',flashes)
+    def test_server_status_on_railway_without_database(self):
+        keys=('RAILWAY_ENVIRONMENT','PANEL_PASSWORD','SECRET_KEY')
+        old={k:os.environ.get(k) for k in keys}
+        os.environ.update({'RAILWAY_ENVIRONMENT':'production','PANEL_PASSWORD':'forte-o-bastante','SECRET_KEY':'curta'})
+        try:
+            import importlib, app as appmod
+            importlib.reload(appmod)  # HOSTED é lido ao importar.
+            self.assertTrue(appmod.HOSTED)
+            panel,_=appmod.create_apps(self.db,self.settings)
+            client=panel.test_client()
+            client.get('/login')
+            with client.session_transaction() as sess: csrf=sess['csrf']
+            client.post('/login',data={'csrf':csrf,'username':'admin','password':'forte-o-bastante'})
+            html=client.get('/?aba=config').get_data(as_text=True)
+            self.assertIn('Chave de sessão forte',html)
+            self.assertIn('fraca ou ausente',html)
+            self.assertIn('usando arquivo local',html)
+        finally:
+            for k,v in old.items():
+                if v is None: os.environ.pop(k,None)
+                else: os.environ[k]=v
+            import importlib, app as appmod
+            importlib.reload(appmod)
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])

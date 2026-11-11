@@ -61,7 +61,7 @@
 
 <main>
 {% for message in get_flashed_messages() %}<div class="flash">{{message}}</div>{% endfor %}
-{% if not configured %}<div class="flash"><b>Recebimento ainda não configurado.</b> Defina a chave do webhook e o ID do número (config.json ou variáveis do Render).</div>{% endif %}
+{% if not configured %}<div class="flash"><b>Recebimento ainda não configurado.</b> Defina as variáveis DATAFY_WEBHOOK_SECRET e DATAFY_PHONE_NUMBER_ID no servidor (Railway: serviço do painel → Variables, e depois aplique o deploy). Veja o quadro “Servidor” em Configurações.</div>{% endif %}
 
 {% if tab == 'painel' %}
 {# ───────────── ACOMPANHAMENTO ───────────── #}
@@ -348,6 +348,10 @@
       <a class="btn ghost" href="/backup">Salvar backup</a>
     </div>
     <p class="help">Último evento recebido: {{ last or 'nenhum' }}.</p>
+    <h3 class="server-title">Servidor</h3>
+    <ul class="server">
+      {% for label, ok, hint in server %}<li class="{{ 'ok' if ok else 'bad' }}"><span aria-hidden="true">{{ '✓' if ok else '✗' }}</span> {{ label }}{% if not ok %} <small>{{ hint }}</small>{% endif %}</li>{% endfor %}
+    </ul>
   </section>
 </div>
 
