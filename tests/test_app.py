@@ -40,6 +40,12 @@ class Integration(unittest.TestCase):
         msg = {'id':mid,'from':'5511999999999','timestamp':str(ts or int(time.time())),'type':'button','button':{'text':'Sim, autorizo','payload':choice}}
         if context: msg['context']={'id':'wamid.out'}
         return msg
+    def sql(self,statement,params=()):
+        db=sqlite3.connect(self.db)
+        try:
+            db.execute(statement,params); db.commit()
+        finally:
+            db.close()
     def scalar(self,sql):
         db=sqlite3.connect(self.db)
         try:return db.execute(sql).fetchone()[0]
@@ -432,6 +438,36 @@ class Integration(unittest.TestCase):
                 else: os.environ[k]=v
             import importlib, app as appmod
             importlib.reload(appmod)
+    def test_new_campaign_does_not_pull_old_sends(self):
+        # Bug relatado: campanha nova com números de uma antiga puxava os envios antigos.
+        day=86400; now=int(time.time())
+        self.import_list('Antiga','telefone\n5583911111111\n5583922222222\n5583933333333\n5583944444444\n5583955555555\n5583966666666\n')
+        self.sql("UPDATE contacts SET created_at=? WHERE campaign='Antiga'",(now-20*day,))
+        self.send(statuses=[self.status_to(f'wamid.a{i}',f'55839{i}{i}{i}{i}{i}{i}{i}{i}',now-10*day+i) for i in (1,2,3)])
+        # A nova tem exatamente os 3 números disparados na antiga (mais parecida com aquele disparo).
+        self.import_list('Nova','telefone\n5583911111111\n5583922222222\n5583933333333\n')
+        for i in (1,2,3):
+            self.assertEqual(self.campaign_of(f'wamid.a{i}'),'Antiga')
+        self.assertIn('Nada a corrigir',self.panel.get('/?aba=config&previa=1').get_data(as_text=True))
+    def test_reprocess_returns_old_sends_pulled_before_the_fix(self):
+        # Dados de antes da correção: sem data de importação e envios antigos já na campanha nova.
+        day=86400; now=int(time.time())
+        self.import_list('Antiga','telefone\n5583911111111\n5583922222222\n5583977777777\n')
+        self.import_list('Nova','telefone\n5583911111111\n5583922222222\n5583988888888\n')
+        self.send(statuses=[self.status_to('wamid.o1','5583911111111',now-10*day),self.status_to('wamid.o2','5583922222222',now-10*day+1),
+                            self.status_to('wamid.o7','5583977777777',now-10*day+2),self.status_to('wamid.n8','5583988888888',now-60)])
+        self.sql('UPDATE contacts SET created_at=NULL')
+        con=sqlite3.connect(self.db)
+        try: nova={p:i for i,p in con.execute("SELECT id,phone FROM contacts WHERE campaign='Nova'")}
+        finally: con.close()
+        for ctx,ph in (('wamid.o1','5583911111111'),('wamid.o2','5583922222222')):
+            self.sql('UPDATE outbounds SET contact_id=? WHERE id=?',(nova[ph],ctx))
+            self.sql('UPDATE events SET contact_id=? WHERE context=?',(nova[ph],ctx))
+        self.assertEqual(self.campaign_of('wamid.o1'),'Nova')
+        self.panel.post('/reprocessar',data={'csrf':self.csrf,'acao':'aplicar'})
+        self.assertEqual(self.campaign_of('wamid.o1'),'Antiga')
+        self.assertEqual(self.campaign_of('wamid.o2'),'Antiga')
+        self.assertEqual(self.campaign_of('wamid.n8'),'Nova')
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])

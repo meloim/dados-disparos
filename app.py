@@ -239,6 +239,30 @@ def median(values):
     mid = len(values) // 2
     return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
 
+LATE_IMPORT = 2 * 86400  # A lista pode ser importada até 2 dias depois do disparo.
+
+def estimate_created_at(db):
+    """Campanhas importadas antes de existir a coluna created_at: estima quando começaram.
+
+    Usa o primeiro envio para um número que só existe naquela campanha (os envios ligados
+    podem estar errados, os telefones exclusivos não). Sem número exclusivo, fica em aberto.
+    """
+    rows = db.execute('SELECT id,campaign,phone,created_at FROM contacts').fetchall()
+    pending = {r['campaign'] for r in rows if r['created_at'] is None}
+    if not pending:
+        return
+    owners = {}
+    for r in rows:
+        owners.setdefault(phone_key(r['phone']), set()).add(r['campaign'])
+    first = {}
+    for e in db.execute("SELECT phone, MIN(ts) AS ts FROM events WHERE kind='status' GROUP BY phone").fetchall():
+        key = phone_key(e['phone'] or '')
+        first[key] = min(first.get(key, e['ts']), e['ts'])
+    for campaign in pending:
+        exclusive = [first[k] for k, camps in owners.items() if camps == {campaign} and k in first]
+        if exclusive:
+            db.execute('UPDATE contacts SET created_at=? WHERE campaign=? AND created_at IS NULL',(min(exclusive), campaign))
+
 def create_apps(db_path=None, settings=None):
     if settings is None:
         cfg = ROOT / 'config.json'
@@ -327,6 +351,12 @@ def create_apps(db_path=None, settings=None):
         db.execute('''UPDATE contacts SET source = CASE WHEN name = phone
             AND campaign IN (SELECT campaign FROM campaign_windows) THEN 'horario' ELSE 'lista' END
             WHERE source IS NULL''')
+        # Quando o contato entrou no painel: uma campanha não pode ficar com envios anteriores a ela.
+        if database_url:
+            db.execute('ALTER TABLE contacts ADD COLUMN IF NOT EXISTS created_at INTEGER')
+        elif 'created_at' not in [r['name'] for r in db.execute('PRAGMA table_info(contacts)').fetchall()]:
+            db.execute('ALTER TABLE contacts ADD COLUMN created_at INTEGER')
+        estimate_created_at(db)
 
     panel = Flask(__name__)
     panel.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
@@ -451,11 +481,14 @@ def create_apps(db_path=None, settings=None):
         # Entrega/leitura podem chegar dias depois e nunca escolhem campanha.
         # Se o 'sent' se perdeu, a entrega/leitura liga o envio a uma lista importada
         # (nunca à captura por horário). O reprocessamento corrige depois quem ficou na lista errada.
-        waiting, in_lists = {}, {}
-        for c in db.execute("SELECT id,phone,outbound FROM contacts WHERE COALESCE(source,'lista')<>'horario' ORDER BY id DESC").fetchall():
+        waiting, in_lists, born = {}, {}, {}
+        for c in db.execute("SELECT id,phone,outbound,created_at FROM contacts WHERE COALESCE(source,'lista')<>'horario' ORDER BY id DESC").fetchall():
             in_lists.setdefault(phone_key(c['phone']), []).append(c['id'])
+            born[c['id']] = c['created_at']
             if c['outbound'] is None:
                 waiting.setdefault(phone_key(c['phone']), []).append(c['id'])
+        # Uma lista não fica com envios de antes de existir (com folga para importação tardia).
+        fits = lambda cid, ts: born[cid] is None or ts >= born[cid] - LATE_IMPORT
         first = {}
         for ev in db.execute("""SELECT * FROM events WHERE kind='status' AND contact_id IS NULL
                 AND context IS NOT NULL AND COALESCE(association,'')<>? ORDER BY ts""",(DISCARDED,)).fetchall():
@@ -467,12 +500,18 @@ def create_apps(db_path=None, settings=None):
             if ev['context'] in known:
                 continue
             known.add(ev['context'])
-            listed = waiting.get(phone_key(ev['phone']))
+            key = phone_key(ev['phone'])
+            # Mesmo critério do reprocessamento: lista que já existia na época tem prioridade.
+            pool = waiting.get(key, [])
+            listed = [cid for cid in pool if fits(cid, ev['ts'])] or pool
             if listed:
-                attach(db, listed.pop(0), ev['context'])
+                chosen = listed[0]
+                pool.remove(chosen)
+                attach(db, chosen, ev['context'])
                 continue
             # Segundo envio para quem já recebeu: se o número está numa lista só, é dela.
-            only = in_lists.get(phone_key(ev['phone']), [])
+            everyone = in_lists.get(key, [])
+            only = [cid for cid in everyone if fits(cid, ev['ts'])] or everyone
             if len(only) == 1:
                 attach(db, only[0], ev['context'])
                 continue
@@ -511,6 +550,7 @@ def create_apps(db_path=None, settings=None):
                 print(f'[processamento] {exc!r}', flush=True)
 
     BURST = 3 * 3600  # Envios até 3 h antes/depois contam como o mesmo disparo.
+    MARGIN = 0.1  # Diferença mínima de semelhança para tirar um envio da campanha atual.
 
     def reprocess(db, apply=True):
         """Refaz a ligação envio → contato dos envios cujo telefone está em mais de uma campanha.
@@ -523,7 +563,10 @@ def create_apps(db_path=None, settings=None):
         Envios movidos à mão não mudam. Devolve o resumo [(de, para, quantidade)].
         """
         from bisect import bisect_left, bisect_right
-        contacts = {c['id']: c for c in db.execute('SELECT id,campaign,phone,source FROM contacts').fetchall()}
+        estimate_created_at(db)
+        contacts = {c['id']: c for c in db.execute('SELECT id,campaign,phone,source,created_at FROM contacts').fetchall()}
+        def eligible(c, ts):
+            return c['created_at'] is None or ts >= c['created_at'] - LATE_IMPORT
         by_key, lists = {}, {}
         for c in contacts.values():
             key = phone_key(c['phone'])
@@ -543,7 +586,10 @@ def create_apps(db_path=None, settings=None):
         for ctx, s in sends.items():
             if ctx in pinned:
                 continue
-            cands = by_key.get(s['key'], [])
+            # Campanhas que já existiam na época do envio têm prioridade sobre as criadas depois.
+            # Se só uma lista criada depois tem o número, é importação tardia legítima.
+            found = by_key.get(s['key'], [])
+            cands = [c for c in found if eligible(c, s['ts'])] or found
             if len(cands) == 1:
                 choice[ctx] = cands[0]['id']
                 continue
@@ -555,22 +601,28 @@ def create_apps(db_path=None, settings=None):
                 return len(around & members) / len(around | members)
             current = owner.get(ctx)
             best = max(score(c) for c in cands)
-            if best == 0 and current in {c['id'] for c in cands}:
+            # Envio já numa lista importada só troca se a outra for claramente mais parecida com o disparo.
+            # (Captura por horário não tem essa proteção: lista importada ganha dela no empate.)
+            if current in {c['id'] for c in cands} and contacts[current]['source'] != 'horario' \
+                    and score(contacts[current]) >= best - MARGIN:
                 choice[ctx] = current
                 continue
-            # Empate: lista importada antes de captura por horário, depois quem já tem, depois a mais nova.
-            ranked = sorted(cands, key=lambda c: (-round(score(c), 6), c['source'] == 'horario', c['id'] != current, -c['id']))
+            # Empate: lista importada antes de captura por horário, depois a mais nova.
+            ranked = sorted(cands, key=lambda c: (-round(score(c), 6), c['source'] == 'horario', -c['id']))
             choice[ctx] = ranked[0]['id']
         moves = {}
-        changed = [ctx for ctx, cid in choice.items() if cid and owner.get(ctx) != cid and ctx not in pinned]
+        # None = tirar da campanha atual (volta para "Sem campanha").
+        changed = [ctx for ctx, cid in choice.items()
+                   if owner.get(ctx) != cid and ctx not in pinned and (cid or owner.get(ctx))]
         has_send = set(owner.values())
         for ctx in changed:
             before = contacts[owner[ctx]]['campaign'] if owner.get(ctx) in contacts else 'Sem campanha'
-            target = contacts[choice[ctx]]
+            target = contacts.get(choice[ctx]) if choice[ctx] else None
+            phone_shown = pretty_phone(target['phone'] if target else contacts[owner[ctx]]['phone'])
             # "Segundo envio": a pessoa já tinha um envio nesta campanha (número repetido na lista
             # ou disparado duas vezes). Ele entra, mas a contagem de pessoas não muda.
-            moves.setdefault((before, target['campaign']), []).append(
-                {'phone': pretty_phone(target['phone']), 'second': choice[ctx] in has_send})
+            moves.setdefault((before, target['campaign'] if target else 'Sem campanha'), []).append(
+                {'phone': phone_shown, 'second': bool(target) and choice[ctx] in has_send})
         # Resumo: (de, para, quantidade, números).
         summary = sorted(((a, b, len(p), p[:30]) for (a, b), p in moves.items()), key=lambda m: -m[2])
         if not apply or not changed:
@@ -579,9 +631,13 @@ def create_apps(db_path=None, settings=None):
         for ctx in changed:
             old, new = owner.get(ctx), choice[ctx]
             touched.update(x for x in (old, new) if x)
-            db.execute('''INSERT INTO outbounds(id,contact_id) VALUES(?,?)
-                ON CONFLICT(id) DO UPDATE SET contact_id=excluded.contact_id''',(ctx,new))
-            db.execute("UPDATE events SET contact_id=?,association='Reprocessado' WHERE kind='status' AND context=?",(new,ctx))
+            if new:
+                db.execute('''INSERT INTO outbounds(id,contact_id) VALUES(?,?)
+                    ON CONFLICT(id) DO UPDATE SET contact_id=excluded.contact_id''',(ctx,new))
+                db.execute("UPDATE events SET contact_id=?,association='Reprocessado' WHERE kind='status' AND context=?",(new,ctx))
+            else:
+                db.execute('DELETE FROM outbounds WHERE id=?',(ctx,))
+                db.execute("UPDATE events SET contact_id=NULL,association=NULL WHERE kind='status' AND context=?",(ctx,))
             if old:
                 # Respostas do contato antigo são religadas do zero (exceto revisões manuais).
                 db.execute('''UPDATE events SET contact_id=NULL,association=NULL WHERE kind='reply' AND contact_id=?
@@ -1090,13 +1146,18 @@ def create_apps(db_path=None, settings=None):
             if not parsed:
                 raise ValueError('O arquivo não contém telefones válidos.')
             with connect() as db:
+                started = {}
                 for campaign,name,number,outbound in parsed:
                     old = db.execute('SELECT outbound FROM contacts WHERE campaign=? AND phone=?',(campaign,number)).fetchone()
                     if old and old['outbound'] and outbound and old['outbound']!=outbound:
                         raise ValueError('Este contato já tem outro envio nesta campanha. Crie uma campanha diferente para novo disparo.')
-                    db.execute('''INSERT INTO contacts(campaign,name,phone,outbound,source) VALUES(?,?,?,?,'lista')
+                    # Campanha nova começa agora; contatos acrescentados herdam o início da campanha.
+                    if campaign not in started:
+                        row = db.execute('SELECT MIN(created_at) AS t, COUNT(*) AS n FROM contacts WHERE campaign=?',(campaign,)).fetchone()
+                        started[campaign] = row['t'] if row['n'] else int(time.time())
+                    db.execute('''INSERT INTO contacts(campaign,name,phone,outbound,source,created_at) VALUES(?,?,?,?,'lista',?)
                       ON CONFLICT(campaign,phone) DO UPDATE SET name=excluded.name,
-                      outbound=COALESCE(contacts.outbound,excluded.outbound),source='lista' ''',(campaign,name,number,outbound))
+                      outbound=COALESCE(contacts.outbound,excluded.outbound),source='lista' ''',(campaign,name,number,outbound,started[campaign]))
                 capture_sends(db)
                 link_by_context(db)
                 # A lista pode ter chegado depois do disparo: envios já ligados a outra campanha voltam para cá.
