@@ -287,9 +287,19 @@ def create_apps(db_path=None, settings=None):
     settings = dict(settings)
     settings['webhook_secret'] = os.environ.get('DATAFY_WEBHOOK_SECRET', settings.get('webhook_secret', '')).strip().strip('"\'')
     settings['phone_number_id'] = str(os.environ.get('DATAFY_PHONE_NUMBER_ID', settings.get('phone_number_id', ''))).strip()
-    database_url = os.environ.get('DATABASE_URL', '') if db_path is None else ''
+    database_url = os.environ.get('DATABASE_URL', '').strip() if db_path is None else ''
     if database_url.startswith('postgres://'):
         database_url = 'postgresql://' + database_url[len('postgres://'):]
+    # Na nuvem, o disco do servidor é apagado a cada deploy: sem PostgreSQL os dados se perdem.
+    # Melhor não subir (e avisar no log) do que funcionar e perder tudo no próximo deploy.
+    if HOSTED and db_path is None and not database_url and not os.environ.get('ALLOW_LOCAL_DB'):
+        raise RuntimeError(
+            'DATABASE_URL vazia: o painel não vai subir sem PostgreSQL na nuvem, porque um banco local '
+            'seria apagado a cada deploy. No Railway, confira a variável DATABASE_URL do serviço do painel '
+            '(ex.: ${{Postgres.DATABASE_URL}}, com o nome exato do serviço do banco) e faça o deploy de novo.')
+    if database_url and not database_url.startswith('postgresql://'):
+        raise RuntimeError('DATABASE_URL não parece um endereço PostgreSQL (deve começar com postgresql://). '
+                           'Se aparecer o texto ${{...}}, a referência ao serviço do banco não foi resolvida.')
     db_path = Path(db_path or ROOT / 'dados' / 'relatorios.sqlite3')
     if not database_url:
         db_path.parent.mkdir(parents=True, exist_ok=True)

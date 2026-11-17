@@ -416,9 +416,11 @@ class Integration(unittest.TestCase):
             flashes=' '.join(m for _,m in sess.get('_flashes',[]))
         self.assertIn('1 número(s) aparecem mais de uma vez',flashes)
     def test_server_status_on_railway_without_database(self):
-        keys=('RAILWAY_ENVIRONMENT','PANEL_PASSWORD','SECRET_KEY')
+        keys=('RAILWAY_ENVIRONMENT','PANEL_PASSWORD','SECRET_KEY','ALLOW_LOCAL_DB','DATABASE_URL')
         old={k:os.environ.get(k) for k in keys}
-        os.environ.update({'RAILWAY_ENVIRONMENT':'production','PANEL_PASSWORD':'forte-o-bastante','SECRET_KEY':'curta'})
+        os.environ.pop('DATABASE_URL',None)
+        os.environ.update({'RAILWAY_ENVIRONMENT':'production','PANEL_PASSWORD':'forte-o-bastante','SECRET_KEY':'curta',
+                           'ALLOW_LOCAL_DB':'1'})
         try:
             import importlib, app as appmod
             importlib.reload(appmod)  # HOSTED é lido ao importar.
@@ -524,6 +526,25 @@ class Integration(unittest.TestCase):
                 self.assertNotIn('%',sql.replace('%s',''),f'SQL com % literal: {sql.strip()[:80]}')
         for sql in _re.findall(r"db\.execute\('([^']*)'",source)+_re.findall(r'db\.execute\("([^"]*)"',source):
             self.assertNotIn('%',sql,f'SQL com % literal: {sql[:80]}')
+    def test_cloud_refuses_to_start_without_database(self):
+        old={k:os.environ.get(k) for k in ('RAILWAY_ENVIRONMENT','DATABASE_URL','ALLOW_LOCAL_DB')}
+        try:
+            os.environ['RAILWAY_ENVIRONMENT']='production'
+            for k in ('DATABASE_URL','ALLOW_LOCAL_DB'): os.environ.pop(k,None)
+            import importlib, app as appmod
+            with self.assertRaises(RuntimeError) as ctx:
+                importlib.reload(appmod)
+            self.assertIn('DATABASE_URL vazia',str(ctx.exception))
+            os.environ['DATABASE_URL']='${{Postgres.DATABASE_URL}}'  # Referência não resolvida.
+            with self.assertRaises(RuntimeError) as ctx:
+                importlib.reload(appmod)
+            self.assertIn('não parece um endereço PostgreSQL',str(ctx.exception))
+        finally:
+            for k,v in old.items():
+                if v is None: os.environ.pop(k,None)
+                else: os.environ[k]=v
+            import importlib, app as appmod
+            importlib.reload(appmod)
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])
