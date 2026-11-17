@@ -32,6 +32,19 @@ ROOT = Path(__file__).resolve().parent
 HOSTED = bool(os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('RAILWAY_PROJECT_ID'))
 LABELS = {'pendente': 'Sem resposta', 'aceitou': 'Aceitou', 'recusou': 'Recusou', 'revisar': 'A classificar', 'outra': 'Outra resposta'}
 MANUAL = 'Revisão manual local'
+SERVICE = 'Atendimento'  # Mensagem de atendimento (resposta do agente), não envio de campanha.
+ALERT_MESSAGES = 20      # Conversa com mais mensagens que isso vira alerta.
+SESSION_GAP = 24 * 3600  # Pausa maior que a janela do WhatsApp começa uma conversa nova.
+
+def is_service_status(raw):
+    """Status de mensagem de atendimento (resposta dentro da janela de 24 h), segundo a Meta."""
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return False
+    pricing = data.get('pricing') or {}
+    origin = ((data.get('conversation') or {}).get('origin') or {}).get('type')
+    return pricing.get('category') == 'service' or origin == 'service'
 # Tipos de mensagem recebida que não são resposta de verdade.
 IGNORED_KINDS = {'revoke', 'unsupported', 'system', 'ephemeral', 'request_welcome', 'errors'}
 MEDIA_LABELS = {'audio': '🎤 Áudio', 'image': '🖼️ Imagem', 'video': '🎬 Vídeo', 'document': '📄 Documento',
@@ -47,6 +60,7 @@ NEGATIVE = {'nao', 'n', 'recuso', 'recusar', 'cancelar', 'cancela', 'sair', 'par
 
 # Palavras que só valem como resposta inteira ("Ok"), não como começo de frase ("Pode me explicar...").
 WEAK = {'ok', 'okay', 'pode', 'bora', 'no', 'n', 's'}
+HELP_TERMS = ('falar com', 'atendente', 'humano', 'ajuda', 'duvida', 'informac', 'explica', 'ligar', 'contato')
 # "Não sei", "não entendi"... são dúvidas, não recusas.
 UNSURE = {'sei', 'entendi', 'lembro', 'recebi', 'consigo', 'vi', 'conheco', 'entendo'}
 
@@ -63,6 +77,9 @@ def reply_intent(text):
         return ''
     whole, first = ' '.join(plain), plain[0]
     if first == 'nao' and len(plain) > 1 and plain[1] in UNSURE:
+        return ''
+    # "Quero falar com alguém", "preciso de ajuda": pedido de atendimento, não aceite nem recusa.
+    if any(term in whole for term in HELP_TERMS):
         return ''
     if whole in NEGATIVE or (first in NEGATIVE and first not in WEAK):
         return 'recusou'
@@ -437,7 +454,7 @@ def create_apps(db_path=None, settings=None):
         outs = {r['id']: r for r in db.execute('''SELECT o.id, o.contact_id, c.phone FROM outbounds o
             JOIN contacts c ON c.id=o.contact_id''').fetchall()}
         loose = db.execute('''SELECT id,kind,phone,ts,context FROM events WHERE contact_id IS NULL
-            AND COALESCE(association,'')<>? ORDER BY ts''',(DISCARDED,)).fetchall()
+            AND COALESCE(association,'') NOT IN (?,?) ORDER BY ts''',(DISCARDED,SERVICE)).fetchall()
         if not loose:
             return
         # Horário de cada envio conhecido, para ligar respostas escritas direto na conversa.
@@ -459,14 +476,43 @@ def create_apps(db_path=None, settings=None):
                     db.execute('UPDATE events SET contact_id=?,association=? WHERE id=?',(max(earlier)[1],'Envio mais recente para o número',ev['id']))
 
     def reclassify(db, rules=None):
-        # Aplica regras novas e o reconhecimento automático às respostas ainda sem classificação.
+        # Aplica regras novas e o reconhecimento automático a todas as respostas classificadas
+        # automaticamente (corrige também as de versões anteriores). Revisões manuais não mudam.
         # Quem acabou de gravar regras nesta transação passa as regras (outra conexão ainda não as vê).
         rules = rules or get_rules()
-        for ev in db.execute("""SELECT id,choice,body FROM events WHERE kind='reply' AND result='revisar'
+        for ev in db.execute("""SELECT id,choice,body,result FROM events WHERE kind='reply'
+                AND result IN ('revisar','aceitou','recusou')
                 AND COALESCE(association,'') NOT IN (?,?)""",(MANUAL,DISCARDED)).fetchall():
             result = classify(ev['choice'], ev['body'], rules)
-            if result != 'revisar':
+            if result != ev['result']:
                 db.execute('UPDATE events SET result=? WHERE id=?',(result,ev['id']))
+
+    def mark_service(db):
+        """Respostas do agente (mensagens de atendimento) não são envios de campanha.
+
+        Marca os status dessas mensagens como SERVICE e desfaz a ligação automática com
+        campanhas (envios fixados à mão continuam como estão).
+        """
+        found = set()
+        for e in db.execute("""SELECT context, raw FROM events WHERE kind='status' AND context IS NOT NULL
+                AND COALESCE(association,'') NOT IN (?,?) AND raw LIKE '%service%'""",(DISCARDED,SERVICE)).fetchall():
+            if is_service_status(e['raw']):
+                found.add(e['context'])
+        if not found:
+            return
+        pinned = {r['id'] for r in db.execute('SELECT id FROM pinned_outbounds').fetchall()}
+        touched = set()
+        for ctx in found - pinned:
+            row = db.execute('SELECT contact_id FROM outbounds WHERE id=?',(ctx,)).fetchone()
+            if row:
+                touched.add(row['contact_id'])
+                db.execute('DELETE FROM outbounds WHERE id=?',(ctx,))
+            db.execute("UPDATE events SET contact_id=NULL, association=? WHERE kind='status' AND context=?",(SERVICE,ctx))
+        for cid in touched:
+            db.execute('UPDATE contacts SET outbound=NULL WHERE id=?',(cid,))
+            mine = db.execute('SELECT id FROM outbounds WHERE contact_id=? ORDER BY id LIMIT 1',(cid,)).fetchone()
+            if mine:
+                db.execute('UPDATE contacts SET outbound=? WHERE id=?',(mine['id'],cid))
 
     def attach(db, contact_id, context):
         db.execute('INSERT INTO outbounds VALUES(?,?) ON CONFLICT DO NOTHING',(context,contact_id))
@@ -491,7 +537,7 @@ def create_apps(db_path=None, settings=None):
         fits = lambda cid, ts: born[cid] is None or ts >= born[cid] - LATE_IMPORT
         first = {}
         for ev in db.execute("""SELECT * FROM events WHERE kind='status' AND contact_id IS NULL
-                AND context IS NOT NULL AND COALESCE(association,'')<>? ORDER BY ts""",(DISCARDED,)).fetchall():
+                AND context IS NOT NULL AND COALESCE(association,'') NOT IN (?,?) ORDER BY ts""",(DISCARDED,SERVICE)).fetchall():
             first.setdefault(ev['context'], ev)
         known = {r['id'] for r in db.execute('SELECT id FROM outbounds').fetchall()}  # Uma consulta só.
         for ev in sorted(first.values(), key=lambda e: e['ts'], reverse=True):
@@ -536,6 +582,7 @@ def create_apps(db_path=None, settings=None):
                 # Vários processos (workers) podem tentar ao mesmo tempo: um de cada vez.
                 db.execute('SELECT pg_advisory_xact_lock(424242)')
             ingest_raw(db)
+            mark_service(db)
             capture_sends(db)
             link_by_context(db)
 
@@ -576,7 +623,7 @@ def create_apps(db_path=None, settings=None):
         owner = {r['id']: r['contact_id'] for r in db.execute('SELECT id,contact_id FROM outbounds').fetchall()}
         sends = {}  # contexto -> horário do envio e telefone
         for r in db.execute("""SELECT context, MIN(ts) AS ts, MIN(phone) AS phone FROM events WHERE kind='status'
-                AND context IS NOT NULL AND COALESCE(association,'')<>? GROUP BY context""",(DISCARDED,)).fetchall():
+                AND context IS NOT NULL AND COALESCE(association,'') NOT IN (?,?) GROUP BY context""",(DISCARDED,SERVICE)).fetchall():
             sends[r['context']] = {'ts': r['ts'], 'key': phone_key(r['phone'])}
         timeline = sorted((s['ts'], s['key']) for s in sends.values())
         times = [t for t, _ in timeline]
@@ -703,10 +750,19 @@ def create_apps(db_path=None, settings=None):
         for entry in payload.get('entry', []):
             for change in entry.get('changes', []):
                 value = change.get('value', {})
-                if change.get('field') != 'messages':
+                field = change.get('field')
+                if field not in ('messages', 'smb_message_echoes'):
                     continue
                 number = str(value.get('metadata', {}).get('phone_number_id', ''))
                 if number != channel:
+                    continue
+                if field == 'smb_message_echoes':
+                    # Mensagem enviada pelo app do WhatsApp Business (uma pessoa da equipe respondendo).
+                    for echo in value.get('message_echoes', []):
+                        kind = echo.get('type', '')
+                        body = echo.get('text', {}).get('body', '') if kind == 'text' else MEDIA_LABELS.get(kind, '[' + kind + ']')
+                        records.append((number+':echo:'+echo['id'], 'echo', re.sub(r'\D', '', str(echo.get('to', ''))), number,
+                            int(echo['timestamp']), echo['id'], str(body), '', '', json.dumps(echo, ensure_ascii=False)))
                     continue
                 for msg in value.get('messages', []):
                     kind = msg.get('type', '')
@@ -816,7 +872,7 @@ def create_apps(db_path=None, settings=None):
             events = db.execute('''SELECT kind,body,ts,contact_id,result FROM events
                 WHERE contact_id IS NOT NULL ORDER BY ts''').fetchall()
             failures = db.execute("""SELECT context,raw,ts,contact_id FROM events WHERE kind='status' AND body='failed'
-                AND COALESCE(association,'')<>? ORDER BY ts""",(DISCARDED,)).fetchall()
+                AND COALESCE(association,'') NOT IN (?,?) ORDER BY ts""",(DISCARDED,SERVICE)).fetchall()
         people = {}
         for e in events:
             p = people.setdefault(e['contact_id'], {'send': None, 'delivered': False, 'read': None, 'failed': False, 'replies': []})
@@ -952,6 +1008,69 @@ def create_apps(db_path=None, settings=None):
             'failed': sum(reasons.values()), 'failed_pct': rate(sum(reasons.values()), base) or 0,
         }
 
+    def conversations():
+        """Conversas por telefone, separadas por pausas de mais de 24 h (janela do WhatsApp).
+
+        Entram: o que a pessoa escreveu, respostas do agente (status de atendimento, sem o
+        texto, que a Datafy não devolve), mensagens enviadas pelo app por alguém da equipe
+        (eco, com texto) e os disparos de campanha.
+        """
+        with connect() as db:
+            people = {}
+            for c in db.execute('SELECT id,campaign,name,phone,created_at FROM contacts ORDER BY id').fetchall():
+                people.setdefault(phone_key(c['phone']), []).append(c)
+            names = {c['id']: c['campaign'] for cs in people.values() for c in cs}
+            events = db.execute('''SELECT kind,phone,ts,context,body,result,contact_id,association FROM events
+                WHERE kind IN ('reply','echo','status') ORDER BY ts''').fetchall()
+        rank = {'sent': 1, 'delivered': 2, 'read': 3, 'failed': 4}
+        threads, outgoing = {}, {}
+        for e in events:
+            key = phone_key(e['phone'] or '')
+            if e['kind'] == 'status':
+                # Uma mensagem enviada pode ter vários status: fica uma linha, com o mais avançado.
+                item = outgoing.get(e['context'])
+                if item is None:
+                    who = 'agent' if e['association'] == SERVICE else ('campaign' if e['contact_id'] else 'unknown')
+                    item = outgoing[e['context']] = {'dir': 'out', 'who': who, 'ts': e['ts'], 'status': e['body'],
+                                                     'campaign': names.get(e['contact_id'], '')}
+                    threads.setdefault(key, []).append(item)
+                elif rank.get(e['body'], 0) > rank.get(item['status'], 0):
+                    item['status'] = e['body']
+            elif e['kind'] == 'echo':
+                threads.setdefault(key, []).append({'dir': 'out', 'who': 'human', 'ts': e['ts'], 'text': e['body']})
+            elif e['association'] != DISCARDED:
+                threads.setdefault(key, []).append({'dir': 'in', 'ts': e['ts'], 'text': e['body'], 'result': e['result']})
+        now = time.time()
+        result = []
+        for key, items in threads.items():
+            if not any(i['dir'] == 'in' or i['who'] == 'human' for i in items):
+                continue  # Só disparo, sem ninguém conversando.
+            items.sort(key=lambda i: i['ts'])
+            sessions, current = [], []
+            for item in items:
+                if current and item['ts'] - current[-1]['ts'] > SESSION_GAP:
+                    sessions.append(current)
+                    current = []
+                current.append(item)
+            sessions.append(current)
+            last = sessions[-1]
+            contact = people.get(key, [None])[-1]
+            name = contact['name'] if contact and phone_key(contact['name']) != key else ''
+            preview = next((i for i in reversed(last) if i.get('text')), None)
+            result.append({
+                'key': key, 'phone': pretty_phone(key if not contact else contact['phone']), 'name': name,
+                'campaign': contact['campaign'] if contact else '',
+                'sessions': sessions, 'count': len(last), 'last_ts': last[-1]['ts'], 'ago': ago(last[-1]['ts'], now),
+                'alert': len(last) > ALERT_MESSAGES, 'active': now - last[-1]['ts'] <= SESSION_GAP,
+                'human': any(i.get('who') == 'human' for i in last),
+                'agent': sum(i.get('who') == 'agent' for i in last),
+                'incoming': sum(i['dir'] == 'in' for i in last),
+                'preview': (preview['text'] if preview else ''),
+                'preview_in': bool(preview and preview['dir'] == 'in'),
+            })
+        result.sort(key=lambda c: c['last_ts'], reverse=True)
+        return result
+
     def server_status():
         """O que o servidor está enxergando (sem mostrar valores)."""
         secret_key = os.environ.get('SECRET_KEY', '')
@@ -966,13 +1085,13 @@ def create_apps(db_path=None, settings=None):
     @panel.get('/')
     def index():
         process_pending()  # Garante a tela em dia mesmo se o segundo plano ainda não rodou.
-        tab = request.args.get('aba') if request.args.get('aba') in ('config', 'graficos') else 'painel'
+        tab = request.args.get('aba') if request.args.get('aba') in ('config', 'graficos', 'conversas') else 'painel'
         all_rows = report()[0]
         with connect() as db:
             active = db.execute('SELECT * FROM campaign_windows WHERE ended IS NULL').fetchone()
             campaigns = [r['campaign'] for r in db.execute('SELECT campaign FROM contacts UNION SELECT campaign FROM campaign_windows ORDER BY campaign')]
             loose = db.execute("""SELECT context,phone,ts,body,raw FROM events WHERE kind='status'
-                AND contact_id IS NULL AND context IS NOT NULL AND COALESCE(association,'')<>? ORDER BY ts""",(DISCARDED,)).fetchall()
+                AND contact_id IS NULL AND context IS NOT NULL AND COALESCE(association,'') NOT IN (?,?) ORDER BY ts""",(DISCARDED,SERVICE)).fetchall()
             # Respostas ligadas a um contato que o reconhecimento automático não entendeu.
             inbox = db.execute("""SELECT e.*, c.campaign, c.name FROM events e JOIN contacts c ON c.id=e.contact_id
                 WHERE e.kind='reply' AND e.result='revisar' ORDER BY e.ts DESC LIMIT 200""").fetchall()
@@ -1021,6 +1140,12 @@ def create_apps(db_path=None, settings=None):
             # Nos gráficos, "Todas" é o padrão: o comparativo já mostra cada campanha.
             campaign = request.args.get('campanha', '')
             charts = analytics(0 if period == 'tudo' else int(period), campaign)
+        # Conversas: sempre calculadas, porque o menu mostra quantas estão em alerta.
+        convs = conversations()
+        open_conv = None
+        if tab == 'conversas' and request.args.get('tel'):
+            wanted = phone_key(request.args.get('tel'))
+            open_conv = next((c for c in convs if c['key'] == wanted), None)
         preview = None
         if tab == 'config' and request.args.get('previa'):
             with connect() as db:
@@ -1044,6 +1169,8 @@ def create_apps(db_path=None, settings=None):
             diag = {'query': diag_q, 'key': key, 'contacts': found, 'events': evs}
         return render_template('index.html', rows=rows, totals=totals, campaigns=campaigns,
             charts=charts, period=period, preview=preview, diag=diag, health=health, server=server_status(),
+            convs=convs, open_conv=open_conv, conv_alerts=sum(c['alert'] and c['active'] for c in convs),
+            alert_limit=ALERT_MESSAGES,
             campaign=campaign, inbox=inbox, outside=outside, labels=LABELS, date_text=date_text,
             configured=bool(settings.get('webhook_secret') and settings.get('phone_number_id')),
             last=date_text(last), rules=rules, active=active, show_results=show_results,
@@ -1234,6 +1361,7 @@ def create_apps(db_path=None, settings=None):
             # Relê todos os avisos originais: recupera o que uma versão anterior deixou de interpretar.
             db.execute('UPDATE raw_webhooks SET processed_at=NULL')
             ingest_raw(db)
+            mark_service(db)
             capture_sends(db)
             link_by_context(db)
             summary = reprocess(db)
@@ -1362,6 +1490,7 @@ def create_apps(db_path=None, settings=None):
                        (DISCARDED, '[Mensagem de tipo: '+kind+']'))
         for kind, label in MEDIA_LABELS.items():
             db.execute("UPDATE events SET body=? WHERE kind='reply' AND body=?",(label, '[Mensagem de tipo: '+kind+']'))
+        mark_service(db)
         capture_sends(db)
         link_by_context(db)
         reclassify(db)

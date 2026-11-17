@@ -160,6 +160,33 @@ tbody tr:hover{background:var(--surface-2)}
 .status-box b{display:block}
 .status-box ul.moves{margin:8px 0 0;padding-left:18px}
 .status-box ul.moves b{display:inline}
+/* Aba Conversas */
+.count.alert{background:var(--danger);color:#fff}
+.conv-list{padding:6px}
+.conv-row{display:flex;gap:12px;align-items:center;padding:12px;border-radius:10px;text-decoration:none;color:var(--text);border-bottom:1px solid var(--line)}
+.conv-row:last-of-type{border-bottom:0}
+.conv-row:hover{background:var(--surface-2)}
+.conv-row.alert{box-shadow:inset 3px 0 0 var(--danger)}
+.conv-main{flex:1;min-width:0;display:flex;flex-direction:column}
+.conv-main small{color:var(--muted);font-size:12px}
+.conv-preview{color:var(--muted);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.conv-side{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none}
+.conv-side small{color:var(--muted);font-size:12px}
+.conv-head{display:flex;flex-wrap:wrap;gap:10px 20px;align-items:center}
+.conv-head.alert{border-color:var(--danger)}
+.conv-head .help{flex-basis:100%;margin:0}
+.conv-tags{display:flex;gap:6px;flex-wrap:wrap}
+.chat{display:flex;flex-direction:column;gap:6px;background:var(--surface-2)}
+.chat-day{align-self:center;font-size:12px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:3px 10px;margin:10px 0 4px}
+.msg{max-width:75%;padding:7px 10px 5px;border-radius:10px;box-shadow:0 1px .5px rgba(11,20,26,.13);display:flex;flex-direction:column;font-size:14px}
+.msg.in{align-self:flex-start;background:var(--surface);border-top-left-radius:2px}
+.msg.out{align-self:flex-end;background:var(--bubble);border-top-right-radius:2px}
+.msg.out.agent{background:var(--surface);border:1px dashed var(--line)}
+.msg.out.campaign{background:var(--warn-bg)}
+.msg-who{font-size:11px;font-weight:700;color:var(--muted);margin-bottom:2px}
+.msg-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.msg-meta{align-self:flex-end;font-size:11px;color:var(--muted);margin-top:2px}
+@media (max-width:640px){.msg{max-width:88%}.conv-row{padding:10px 6px}}
 .server-title{font-size:14px;margin:16px 0 6px}
 .server{list-style:none;padding:0;margin:0;font-size:13px;display:grid;gap:4px}
 .server li.ok span{color:var(--ok)}

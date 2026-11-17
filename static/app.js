@@ -87,6 +87,31 @@
     sync();
   }
 
+  // Aba Conversas: filtros (todas, com alerta, ativas, atendimento humano) e busca.
+  var convRows = document.querySelectorAll('.conv-row');
+  if (convRows.length) {
+    var convFilter = 'all', convQuery = '';
+    var convApply = function () {
+      var shown = 0;
+      convRows.forEach(function (row) {
+        var ok = convFilter === 'all' || row.dataset[convFilter] === '1';
+        if (ok && convQuery) ok = row.dataset.search.indexOf(convQuery) !== -1;
+        row.classList.toggle('hidden', !ok);
+        if (ok) shown++;
+      });
+      document.getElementById('conv-none').classList.toggle('hidden', shown > 0);
+      document.querySelectorAll('[data-conv]').forEach(function (b) { b.classList.toggle('on', b.dataset.conv === convFilter); });
+    };
+    document.querySelectorAll('[data-conv]').forEach(function (b) {
+      b.addEventListener('click', function () { convFilter = b.dataset.conv; convApply(); });
+    });
+    var convSearch = document.getElementById('conv-search');
+    if (convSearch) convSearch.addEventListener('input', function () {
+      convQuery = convSearch.value.trim().toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+      convApply();
+    });
+  }
+
   var pick = document.getElementById('campaign-pick');
   if (pick) pick.addEventListener('change', function () { pick.form.submit(); });
 

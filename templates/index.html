@@ -53,6 +53,7 @@
   </div>
   <nav class="tabs">
     <a href="{{ url_for('index', campanha=campaign) }}" class="{{ 'on' if tab=='painel' }}">Acompanhamento</a>
+    <a href="{{ url_for('index', aba='conversas') }}" class="{{ 'on' if tab=='conversas' }}">Conversas{% if conv_alerts %} <span class="count alert" title="Conversas ativas com mais de {{ alert_limit }} mensagens">⚠ {{ conv_alerts }}</span>{% endif %}</a>
     <a href="{{ url_for('index', aba='graficos') }}" class="{{ 'on' if tab=='graficos' }}">Gráficos</a>
     {% set pending = inbox|length + unlinked_sends|length + outside|length %}
     <a href="{{ url_for('index', aba='config') }}" class="{{ 'on' if tab=='config' }}">Configurações{% if pending %} <span class="count" title="Itens pedindo atenção">{{ pending }}</span>{% endif %}</a>
@@ -199,6 +200,72 @@
 </section>
 <p class="muted">Último evento recebido: {{ last or 'nenhum' }} · Horário de Brasília · A página se atualiza sozinha a cada 30 segundos.</p>
 </div>
+
+{% elif tab == 'conversas' %}
+{# ───────────── CONVERSAS (só leitura) ───────────── #}
+{% macro who_label(i) -%}
+  {%- if i.who == 'agent' %}🤖 Resposta automática{% elif i.who == 'human' %}👤 Equipe (pelo app){% elif i.who == 'campaign' %}📣 Disparo{% if i.campaign %} · {{ i.campaign }}{% endif %}{% else %}Mensagem enviada{% endif -%}
+{%- endmacro %}
+{% if open_conv %}
+  {% set c = open_conv %}
+  <div class="bar"><a class="btn ghost" href="{{ url_for('index', aba='conversas') }}">← Todas as conversas</a></div>
+  <section class="card conv-head{{ ' alert' if c.alert }}">
+    <div class="who"><span class="avatar">{% if c.name %}{{ c.name[:1]|upper }}{% else %}👤{% endif %}</span>
+      <div><b>{{ c.name or c.phone }}</b><small>{% if c.name %}{{ c.phone }} · {% endif %}{{ c.campaign or 'sem campanha' }}</small></div></div>
+    <div class="conv-tags">
+      {% if c.alert %}<span class="badge recusou">⚠ {{ c.count }} mensagens na conversa atual</span>{% else %}<span class="badge">{{ c.count }} mensagens na conversa atual</span>{% endif %}
+      {% if c.human %}<span class="badge aceitou">👤 Atendimento humano</span>{% endif %}
+    </div>
+    {% if c.alert %}<p class="help">Conversa longa: vale ler para ver se o agente está resolvendo ou se a pessoa precisa de alguém da equipe.</p>{% endif %}
+  </section>
+  <section class="card chat">
+    {% for s in c.sessions|reverse %}
+      <div class="chat-day">{% if loop.first %}Conversa atual{% else %}Conversa anterior{% endif %} · começou em {{ date_text(s[0].ts)[:16] }} · {{ s|length }} mensagens</div>
+      {% for i in s %}
+        <div class="msg {{ i.dir }} {{ i.who or '' }}">
+          {% if i.dir == 'out' %}<small class="msg-who">{{ who_label(i) }}</small>{% endif %}
+          {% if i.text %}<span class="msg-text">{{ i.text }}</span>{% endif %}
+          <small class="msg-meta">{{ date_text(i.ts)[11:16] }}{% if i.status %} · {{ status_label.get(i.status, i.status) }}{% endif %}{% if i.dir == 'in' and i.result in ('aceitou','recusou') %} · {{ labels[i.result] }}{% endif %}</small>
+        </div>
+      {% endfor %}
+    {% endfor %}
+  </section>
+{% else %}
+  {% set alerts = convs|selectattr('alert')|list %}
+  <div class="bar">
+    <div class="filters">
+      <button type="button" class="chip on" data-conv="all">Todas <b>{{ convs|length }}</b></button>
+      <button type="button" class="chip" data-conv="alert">⚠ Com alerta <b>{{ alerts|length }}</b></button>
+      <button type="button" class="chip" data-conv="active">Ativas (24 h) <b>{{ convs|selectattr('active')|list|length }}</b></button>
+      <button type="button" class="chip" data-conv="human">👤 Atendimento humano <b>{{ convs|selectattr('human')|list|length }}</b></button>
+    </div>
+    <span class="spacer"></span>
+    <input id="conv-search" class="search" type="search" placeholder="Buscar nome ou telefone" aria-label="Buscar conversa">
+  </div>
+  <p class="muted">Conversas com mais de <b>{{ alert_limit }} mensagens</b> (somando os dois lados, sem pausa de mais de 24 h) aparecem em alerta. As respostas do agente aparecem sem o texto, porque a Datafy não devolve o conteúdo das mensagens enviadas pela API.</p>
+  <section class="card conv-list">
+    {% for c in convs %}
+      <a class="conv-row{{ ' alert' if c.alert }}" href="{{ url_for('index', aba='conversas', tel=c.key) }}"
+         data-alert="{{ 1 if c.alert else 0 }}" data-active="{{ 1 if c.active else 0 }}" data-human="{{ 1 if c.human else 0 }}"
+         data-search="{{ (c.name ~ c.key)|lower|replace(' ','') }}">
+        <span class="avatar">{% if c.name %}{{ c.name[:1]|upper }}{% else %}👤{% endif %}</span>
+        <span class="conv-main">
+          <b>{{ c.name or c.phone }}</b>
+          <small>{% if c.name %}{{ c.phone }} · {% endif %}{{ c.campaign or 'sem campanha' }}</small>
+          <span class="conv-preview">{% if not c.preview_in and c.preview %}↪ {% endif %}{{ c.preview or '—' }}</span>
+        </span>
+        <span class="conv-side">
+          <small>{{ c.ago }}</small>
+          {% if c.alert %}<span class="badge recusou">⚠ {{ c.count }} msgs</span>{% else %}<span class="badge">{{ c.count }} msgs</span>{% endif %}
+          {% if c.human %}<span class="badge aceitou">👤 humano</span>{% endif %}
+        </span>
+      </a>
+    {% else %}
+      <div class="empty">Nenhuma conversa ainda. Elas aparecem quando alguém responder um disparo.</div>
+    {% endfor %}
+    <div id="conv-none" class="empty hidden">Nenhuma conversa neste filtro.</div>
+  </section>
+{% endif %}
 
 {% elif tab == 'graficos' %}
 {# ───────────── GRÁFICOS ───────────── #}

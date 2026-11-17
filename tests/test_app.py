@@ -468,6 +468,52 @@ class Integration(unittest.TestCase):
         self.assertEqual(self.campaign_of('wamid.o1'),'Antiga')
         self.assertEqual(self.campaign_of('wamid.o2'),'Antiga')
         self.assertEqual(self.campaign_of('wamid.n8'),'Nova')
+    def service_status(self,mid,phone,ts,state='sent'):
+        s=self.status_to(mid,phone,ts,state); s['pricing']={'billable':False,'category':'service'}; return s
+    def echo(self,mid,phone,ts,text):
+        body=json.dumps({'entry':[{'changes':[{'field':'smb_message_echoes','value':{'metadata':{'phone_number_id':'123'},
+            'message_echoes':[{'id':mid,'from':'5581900000000','to':phone,'timestamp':str(ts),'type':'text','text':{'body':text}}]}}]}]}).encode()
+        return self.signed_post(body)
+    def test_agent_replies_are_not_campaign_sends(self):
+        now=int(time.time())
+        self.import_list('Campanha','telefone\n5583911111111\n')
+        camp=self.status_to('wamid.c','5583911111111',now-300); camp['pricing']={'category':'marketing'}
+        self.send(statuses=[camp])
+        self.send([self.reply_from('r1','5583911111111',now-200,'Oi, quero saber mais')])
+        self.send(statuses=[self.service_status('wamid.ag1','5583911111111',now-190),self.service_status('wamid.ag1','5583911111111',now-180,'read')])
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM outbounds'),1)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM events WHERE context='wamid.ag1' AND association='Atendimento'"),2)
+        html=self.panel.get('/?campanha=Campanha').get_data(as_text=True)
+        self.assertNotIn('2 mensagens',html)
+        self.assertNotIn('wamid.ag1',self.panel.get('/?aba=config').get_data(as_text=True))  # Não vira "envio sem campanha".
+    def test_conversations_tab_and_alert(self):
+        now=int(time.time())
+        self.import_list('Campanha','nome,telefone\nEscola Sol,5583911111111\n')
+        self.send(statuses=[self.status_to('wamid.c','5583911111111',now-3000)])
+        for i in range(11):  # 11 mensagens da pessoa + 11 respostas do agente = 22 (+ disparo) > 20
+            self.send([self.reply_from(f'r{i}','5583911111111',now-2000+i*60,f'mensagem {i}')])
+            self.send(statuses=[self.service_status(f'wamid.ag{i}','5583911111111',now-1990+i*60)])
+        self.echo('wamid.eco','5583911111111',now-100,'Oi, aqui é a Mariana da equipe!')
+        html=self.panel.get('/?aba=conversas').get_data(as_text=True)
+        self.assertIn('Escola Sol',html)
+        self.assertIn('⚠ 24 msgs',html)
+        self.assertIn('👤 humano',html)
+        self.assertIn('class="count alert"',html)  # Contador de alerta no menu.
+        detail=self.panel.get('/?aba=conversas&tel=5583911111111').get_data(as_text=True)
+        self.assertIn('Oi, aqui é a Mariana da equipe!',detail)
+        self.assertIn('🤖 Resposta automática',detail)
+        self.assertIn('📣 Disparo',detail)
+    def test_service_send_linked_before_fix_is_unlinked(self):
+        now=int(time.time())
+        self.import_list('Campanha','telefone\n5583911111111\n')
+        self.send(statuses=[self.status_to('wamid.c','5583911111111',now-300)])
+        # Antes da correção a resposta do agente entrava como 2º envio da campanha.
+        svc=self.status_to('wamid.ag','5583911111111',now-100); self.send(statuses=[svc])
+        self.assertEqual(self.campaign_of('wamid.ag'),'Campanha')
+        self.sql("UPDATE events SET raw=? WHERE context='wamid.ag'",(json.dumps({**svc,'pricing':{'category':'service'}}),))
+        self.send(statuses=[self.status_to('wamid.x','5583999999999',now)])  # Qualquer aviso dispara o processamento.
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM outbounds WHERE id='wamid.ag'"),0)
+        self.assertEqual(self.campaign_of('wamid.c'),'Campanha')
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])
