@@ -495,7 +495,7 @@ def create_apps(db_path=None, settings=None):
         """
         found = set()
         for e in db.execute("""SELECT context, raw FROM events WHERE kind='status' AND context IS NOT NULL
-                AND COALESCE(association,'') NOT IN (?,?) AND raw LIKE '%service%'""",(DISCARDED,SERVICE)).fetchall():
+                AND COALESCE(association,'') NOT IN (?,?) AND raw LIKE ?""",(DISCARDED,SERVICE,'%service%')).fetchall():
             if is_service_status(e['raw']):
                 found.add(e['context'])
         if not found:

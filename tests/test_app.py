@@ -514,6 +514,16 @@ class Integration(unittest.TestCase):
         self.send(statuses=[self.status_to('wamid.x','5583999999999',now)])  # Qualquer aviso dispara o processamento.
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM outbounds WHERE id='wamid.ag'"),0)
         self.assertEqual(self.campaign_of('wamid.c'),'Campanha')
+    def test_sql_has_no_literal_percent(self):
+        # No PostgreSQL (psycopg), "%" escrito dentro do SQL quebra a consulta e o servidor não sobe.
+        # Padrões como '%service%' precisam ir como parâmetro.
+        import re as _re
+        source=(Path(__file__).resolve().parent.parent/'app.py').read_text(encoding='utf-8')
+        for sql in _re.findall(r"(?:'''|\"\"\")(.*?)(?:'''|\"\"\")",source,_re.S):
+            if _re.search(r'\b(SELECT|UPDATE|INSERT|DELETE)\b',sql):
+                self.assertNotIn('%',sql.replace('%s',''),f'SQL com % literal: {sql.strip()[:80]}')
+        for sql in _re.findall(r"db\.execute\('([^']*)'",source)+_re.findall(r'db\.execute\("([^"]*)"',source):
+            self.assertNotIn('%',sql,f'SQL com % literal: {sql[:80]}')
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])
