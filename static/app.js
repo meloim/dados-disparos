@@ -171,6 +171,10 @@
   window.addEventListener('scroll', hideTip, true);
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') hideTip(); });
 
+  // Conversa abre já na última mensagem, como no WhatsApp.
+  function chatBottom() { var c = document.getElementById('chat'); if (c) c.scrollTop = c.scrollHeight; }
+  chatBottom();
+
   // Atualiza só a área de dados, sem recarregar a página nem perder filtro/busca.
   var live = document.getElementById('live');
   if (!live) return;
@@ -191,7 +195,12 @@
         var next = new DOMParser().parseFromString(html, 'text/html').getElementById('live');
         if (!next) return;
         hideTip();
+        var chat = document.getElementById('chat');
+        var atEnd = !chat || chat.scrollHeight - chat.scrollTop - chat.clientHeight < 40;
+        var pos = chat ? chat.scrollTop : 0;
         live.innerHTML = next.innerHTML;
+        chat = document.getElementById('chat');
+        if (chat) { if (atEnd) chatBottom(); else chat.scrollTop = pos; }
         last = Date.now();
         tick();
         bind();

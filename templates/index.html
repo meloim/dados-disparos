@@ -218,13 +218,15 @@
     </div>
     {% if c.alert %}<p class="help">Conversa longa: vale ler para ver se o agente está resolvendo ou se a pessoa precisa de alguém da equipe.</p>{% endif %}
   </section>
-  <section class="card chat">
-    {% for s in c.sessions|reverse %}
-      <div class="chat-day">{% if loop.first %}Conversa atual{% else %}Conversa anterior{% endif %} · começou em {{ date_text(s[0].ts)[:16] }} · {{ s|length }} mensagens</div>
+  <section class="card chat" id="chat">
+    {% for s in c.sessions %}
+      <div class="chat-day">{% if loop.last %}Conversa atual{% else %}Conversa anterior{% endif %} · {{ date_text(s[0].ts)[:16] }}</div>
       {% for i in s %}
-        <div class="msg {{ i.dir }} {{ i.who or '' }}">
-          {% if i.dir == 'out' %}<small class="msg-who">{{ who_label(i) }}</small>{% endif %}
-          {% if i.text %}<span class="msg-text">{{ i.text }}</span>{% endif %}
+        {% set prev = s[loop.index0 - 1] if not loop.first else none %}
+        {% set new_side = not prev or prev.dir != i.dir or prev.who != i.who %}
+        <div class="msg {{ i.dir }} {{ i.who or '' }}{{ ' first' if new_side }}">
+          {% if i.dir == 'out' and new_side %}<small class="msg-who">{{ who_label(i) }}</small>{% endif %}
+          {% if i.text %}<span class="msg-text">{{ i.text }}</span>{% elif i.dir == 'out' %}<span class="msg-text msg-empty">Texto não registrado</span>{% endif %}
           {% if i.handoff %}<span class="badge aceitou msg-flag">🙋 Transferiu para um humano</span>{% endif %}
           <small class="msg-meta">{{ date_text(i.ts)[11:16] }}{% if i.status %} · {{ status_label.get(i.status, i.status) }}{% endif %}{% if i.dir == 'in' and i.result in ('aceitou','recusou') %} · {{ labels[i.result] }}{% endif %}</small>
         </div>

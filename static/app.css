@@ -176,12 +176,17 @@ tbody tr:hover{background:var(--surface-2)}
 .conv-head.alert{border-color:var(--danger)}
 .conv-head .help{flex-basis:100%;margin:0}
 .conv-tags{display:flex;gap:6px;flex-wrap:wrap}
-.chat{display:flex;flex-direction:column;gap:6px;background:var(--surface-2)}
+.chat{display:flex;flex-direction:column;gap:3px;background:var(--surface-2);max-height:70vh;overflow-y:auto}
 .chat-day{align-self:center;font-size:12px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:3px 10px;margin:10px 0 4px}
 .msg{max-width:75%;padding:7px 10px 5px;border-radius:10px;box-shadow:0 1px .5px rgba(11,20,26,.13);display:flex;flex-direction:column;font-size:14px}
-.msg.in{align-self:flex-start;background:var(--surface);border-top-left-radius:2px}
-.msg.out{align-self:flex-end;background:var(--bubble);border-top-right-radius:2px}
-.msg.out.agent{background:var(--surface);border:1px dashed var(--line)}
+.msg.in{align-self:flex-start;background:var(--surface)}
+.msg.out{align-self:flex-end;background:var(--bubble)}
+.msg.in.first{border-top-left-radius:2px}
+.msg.out.first{border-top-right-radius:2px}
+.msg.first{margin-top:10px}
+.msg.out.agent{background:var(--bubble)}
+.msg.out.human{background:var(--surface);box-shadow:inset 3px 0 0 var(--wa-teal)}
+.msg-empty{color:var(--muted);font-style:italic;font-size:13px}
 .msg.out.campaign{background:var(--warn-bg)}
 .msg-who{font-size:11px;font-weight:700;color:var(--muted);margin-bottom:2px}
 .msg-text{white-space:pre-wrap;overflow-wrap:anywhere}
