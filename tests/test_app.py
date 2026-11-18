@@ -545,6 +545,41 @@ class Integration(unittest.TestCase):
                 else: os.environ[k]=v
             import importlib, app as appmod
             importlib.reload(appmod)
+    def test_robot_copies_show_text_in_conversation(self):
+        now=int(time.time())
+        old=os.environ.get('ROBO_API_TOKEN')
+        try:
+            os.environ.pop('ROBO_API_TOKEN',None)
+            self.assertEqual(self.panel.post('/api/robo/mensagens',json={'telefone':'5583911111111','texto':'oi'}).status_code,503)
+            os.environ['ROBO_API_TOKEN']='token-de-teste-bem-longo'
+            auth={'Authorization':'Bearer token-de-teste-bem-longo'}
+            self.assertEqual(self.panel.post('/api/robo/mensagens',json={'telefone':'5583911111111','texto':'oi'},
+                                             headers={'Authorization':'Bearer errado'}).status_code,401)
+            self.import_list('Campanha','nome,telefone\nEscola Sol,5583911111111\n')
+            self.send([self.reply_from('r1','558311111111',now-200,'Qual o horário do evento?')])
+            self.send(statuses=[self.service_status('wamid.ag1','558311111111',now-190),self.service_status('wamid.ag1','558311111111',now-180,'read')])
+            # Cópia com o wamid: o texto entra no mesmo balão do status.
+            r=self.panel.post('/api/robo/mensagens',headers=auth,json={'telefone':'5583911111111','wamid':'wamid.ag1',
+                'texto':'O evento começa às 14h, no auditório principal.','enviado_em':now-190})
+            self.assertEqual(r.status_code,200)
+            # Lista, sem wamid, horário ISO e transferência para humano.
+            r=self.panel.post('/api/robo/mensagens',headers=auth,json=[{'telefone':'+55 83 91111-1111',
+                'texto':'Vou chamar alguém da equipe para te ajudar.','enviado_em':'2026-11-18T12:00:00-03:00','transferido_para_humano':True}])
+            self.assertEqual(r.json['salvas'],1)
+            # Mesma cópia de novo (o robô reenviou): não duplica.
+            self.panel.post('/api/robo/mensagens',headers=auth,json={'telefone':'5583911111111','wamid':'wamid.ag1',
+                'texto':'O evento começa às 14h, no auditório principal.','enviado_em':now-190})
+            self.assertEqual(self.scalar('SELECT COUNT(*) FROM robot_messages'),2)
+            detail=self.panel.get('/?aba=conversas&tel=5583911111111').get_data(as_text=True)
+            self.assertIn('O evento começa às 14h, no auditório principal.',detail)
+            self.assertIn('Vou chamar alguém da equipe',detail)
+            self.assertIn('🙋 Transferiu para um humano',detail)
+            self.assertIn('👤 Atendimento humano',detail)
+            self.assertEqual(detail.count('O evento começa às 14h'),1)
+            self.assertEqual(self.panel.post('/api/robo/mensagens',headers=auth,json={'telefone':'5583911111111'}).status_code,400)
+        finally:
+            if old is None: os.environ.pop('ROBO_API_TOKEN',None)
+            else: os.environ['ROBO_API_TOKEN']=old
     def test_manual_move_is_not_reprocessed(self):
         now=int(time.time())
         self.send(statuses=[self.status_to('wamid.m','5583911111111',now-100)])

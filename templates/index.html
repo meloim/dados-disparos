@@ -225,6 +225,7 @@
         <div class="msg {{ i.dir }} {{ i.who or '' }}">
           {% if i.dir == 'out' %}<small class="msg-who">{{ who_label(i) }}</small>{% endif %}
           {% if i.text %}<span class="msg-text">{{ i.text }}</span>{% endif %}
+          {% if i.handoff %}<span class="badge aceitou msg-flag">🙋 Transferiu para um humano</span>{% endif %}
           <small class="msg-meta">{{ date_text(i.ts)[11:16] }}{% if i.status %} · {{ status_label.get(i.status, i.status) }}{% endif %}{% if i.dir == 'in' and i.result in ('aceitou','recusou') %} · {{ labels[i.result] }}{% endif %}</small>
         </div>
       {% endfor %}
@@ -242,7 +243,7 @@
     <span class="spacer"></span>
     <input id="conv-search" class="search" type="search" placeholder="Buscar nome ou telefone" aria-label="Buscar conversa">
   </div>
-  <p class="muted">Conversas com mais de <b>{{ alert_limit }} mensagens</b> (somando os dois lados, sem pausa de mais de 24 h) aparecem em alerta. As respostas do agente aparecem sem o texto, porque a Datafy não devolve o conteúdo das mensagens enviadas pela API.</p>
+  <p class="muted">Conversas com mais de <b>{{ alert_limit }} mensagens</b> (somando os dois lados, sem pausa de mais de 24 h) aparecem em alerta.{% if not robot_connected %} As respostas do agente aparecem sem o texto até o robô ser ligado ao painel (ROBO_API_TOKEN), porque a Datafy não devolve o conteúdo das mensagens enviadas pela API.{% endif %}</p>
   <section class="card conv-list">
     {% for c in convs %}
       <a class="conv-row{{ ' alert' if c.alert }}" href="{{ url_for('index', aba='conversas', tel=c.key) }}"

@@ -34,6 +34,8 @@ LABELS = {'pendente': 'Sem resposta', 'aceitou': 'Aceitou', 'recusou': 'Recusou'
 MANUAL = 'Revisão manual local'
 SERVICE = 'Atendimento'  # Mensagem de atendimento (resposta do agente), não envio de campanha.
 ALERT_MESSAGES = 20      # Conversa com mais mensagens que isso vira alerta.
+ROBOT_PATH = '/api/robo/mensagens'          # O robô de atendimento manda aqui a cópia do que enviou.
+MACHINE_PATHS = ('/webhook/datafy', ROBOT_PATH)
 SESSION_GAP = 24 * 3600  # Pausa maior que a janela do WhatsApp começa uma conversa nova.
 
 def is_service_status(raw):
@@ -361,6 +363,9 @@ def create_apps(db_path=None, settings=None):
         INSERT INTO outbounds SELECT outbound,id FROM contacts WHERE outbound IS NOT NULL ON CONFLICT DO NOTHING;
         CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS pinned_outbounds (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS robot_messages (
+          id TEXT PRIMARY KEY, phone TEXT NOT NULL, body TEXT NOT NULL, ts INTEGER NOT NULL,
+          handoff INTEGER NOT NULL DEFAULT 0, received_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS raw_webhooks (
           id TEXT PRIMARY KEY, received_at INTEGER NOT NULL, body TEXT NOT NULL,
           processed_at INTEGER, error TEXT);
@@ -395,11 +400,12 @@ def create_apps(db_path=None, settings=None):
     @panel.before_request
     def csrf_check():
         # CSS, JS e logo são públicos: a própria tela de login depende deles.
-        public = request.endpoint in ('login', 'health', 'static') or request.path == '/webhook/datafy'
+        # Webhook da Datafy e cópia das mensagens do robô têm autenticação própria (assinatura / token).
+        public = request.endpoint in ('login', 'health', 'static') or request.path in MACHINE_PATHS
         if not public and os.environ.get('PANEL_PASSWORD') and not session.get('authenticated'):
             return redirect(url_for('login', next=request.path))
         if request.method == 'POST' and not secrets.compare_digest(session.get('csrf', ''), request.form.get('csrf', '!')):
-            if request.path != '/webhook/datafy':
+            if request.path not in MACHINE_PATHS:
                 abort(403)
         session.setdefault('csrf', secrets.token_hex(24))
 
@@ -1032,6 +1038,7 @@ def create_apps(db_path=None, settings=None):
             names = {c['id']: c['campaign'] for cs in people.values() for c in cs}
             events = db.execute('''SELECT kind,phone,ts,context,body,result,contact_id,association FROM events
                 WHERE kind IN ('reply','echo','status') ORDER BY ts''').fetchall()
+            copies = db.execute('SELECT id,phone,body,ts,handoff FROM robot_messages ORDER BY ts').fetchall()
         rank = {'sent': 1, 'delivered': 2, 'read': 3, 'failed': 4}
         threads, outgoing = {}, {}
         for e in events:
@@ -1050,6 +1057,15 @@ def create_apps(db_path=None, settings=None):
                 threads.setdefault(key, []).append({'dir': 'out', 'who': 'human', 'ts': e['ts'], 'text': e['body']})
             elif e['association'] != DISCARDED:
                 threads.setdefault(key, []).append({'dir': 'in', 'ts': e['ts'], 'text': e['body'], 'result': e['result']})
+        # Texto das respostas do robô (cópia enviada por ele): entra no mesmo balão do status,
+        # pelo wamid; sem wamid correspondente, vira um balão próprio no horário informado.
+        for r in copies:
+            item = outgoing.get(r['id'])
+            if item is not None:
+                item.update(who='agent', text=r['body'], handoff=bool(r['handoff']))
+            else:
+                threads.setdefault(phone_key(r['phone']), []).append(
+                    {'dir': 'out', 'who': 'agent', 'ts': r['ts'], 'text': r['body'], 'handoff': bool(r['handoff'])})
         now = time.time()
         result = []
         for key, items in threads.items():
@@ -1072,7 +1088,9 @@ def create_apps(db_path=None, settings=None):
                 'campaign': contact['campaign'] if contact else '',
                 'sessions': sessions, 'count': len(last), 'last_ts': last[-1]['ts'], 'ago': ago(last[-1]['ts'], now),
                 'alert': len(last) > ALERT_MESSAGES, 'active': now - last[-1]['ts'] <= SESSION_GAP,
-                'human': any(i.get('who') == 'human' for i in last),
+                # Humano: alguém da equipe respondeu pelo app, ou o robô avisou que transferiu.
+                'human': any(i.get('who') == 'human' or i.get('handoff') for i in last),
+                'handoff': any(i.get('handoff') for i in last),
                 'agent': sum(i.get('who') == 'agent' for i in last),
                 'incoming': sum(i['dir'] == 'in' for i in last),
                 'preview': (preview['text'] if preview else ''),
@@ -1090,6 +1108,8 @@ def create_apps(db_path=None, settings=None):
             ('Senha do painel (PANEL_PASSWORD)', bool(os.environ.get('PANEL_PASSWORD')) or not HOSTED, 'faltando: o painel está aberto sem login'),
             ('Chave de sessão forte (SECRET_KEY)', len(secret_key) >= 32 or not HOSTED, 'fraca ou ausente: use um texto aleatório de 32+ caracteres'),
             ('Banco PostgreSQL (DATABASE_URL)', bool(database_url) or not HOSTED, 'ausente: usando arquivo local, que é apagado a cada deploy'),
+            ('Texto das respostas do robô (ROBO_API_TOKEN)', bool(os.environ.get('ROBO_API_TOKEN') or settings.get('robo_api_token')),
+             'não configurado: as respostas do robô aparecem sem o texto na aba Conversas'),
         ]
 
     @panel.get('/')
@@ -1180,7 +1200,7 @@ def create_apps(db_path=None, settings=None):
         return render_template('index.html', rows=rows, totals=totals, campaigns=campaigns,
             charts=charts, period=period, preview=preview, diag=diag, health=health, server=server_status(),
             convs=convs, open_conv=open_conv, conv_alerts=sum(c['alert'] and c['active'] for c in convs),
-            alert_limit=ALERT_MESSAGES,
+            alert_limit=ALERT_MESSAGES, robot_connected=bool(os.environ.get('ROBO_API_TOKEN') or settings.get('robo_api_token')),
             campaign=campaign, inbox=inbox, outside=outside, labels=LABELS, date_text=date_text,
             configured=bool(settings.get('webhook_secret') and settings.get('phone_number_id')),
             last=date_text(last), rules=rules, active=active, show_results=show_results,
@@ -1363,6 +1383,49 @@ def create_apps(db_path=None, settings=None):
         flash(f'{moved} envio(s) movido(s) para “{campaign}”.')
         return redirect(url_for('index', campanha=campaign))
 
+    def parse_when(value):
+        """Horário em segundos, milissegundos ou ISO 8601; sem horário, agora."""
+        if value in (None, ''):
+            return int(time.time())
+        if isinstance(value, (int, float)) or str(value).isdigit():
+            n = float(value)
+            return int(n / 1000 if n > 1e12 else n)
+        return int(datetime.fromisoformat(str(value).replace('Z', '+00:00')).timestamp())
+
+    @panel.post(ROBOT_PATH)
+    def robot_messages():
+        """Cópia das mensagens que o robô enviou: a Datafy não devolve o texto, o robô sim.
+
+        Corpo JSON (um objeto ou uma lista): telefone, texto, e opcionalmente wamid (ID que a
+        Datafy devolveu no envio), enviado_em e transferido_para_humano. Autenticação:
+        cabeçalho "Authorization: Bearer <ROBO_API_TOKEN>".
+        """
+        token = os.environ.get('ROBO_API_TOKEN', '') or settings.get('robo_api_token', '')
+        if not token:
+            return {'error': 'Defina ROBO_API_TOKEN no servidor'}, 503
+        given = request.headers.get('Authorization', '').removeprefix('Bearer ').strip()
+        if not secrets.compare_digest(given.encode(), token.encode()):
+            abort(401)
+        data = request.get_json(silent=True)
+        items = data if isinstance(data, list) else [data]
+        saved = 0
+        with connect() as db:
+            for item in items:
+                if not isinstance(item, dict) or not item.get('telefone') or not str(item.get('texto', '')).strip():
+                    return {'error': 'Cada mensagem precisa de "telefone" e "texto".'}, 400
+                try:
+                    ts = parse_when(item.get('enviado_em'))
+                    number = phone(item['telefone'])
+                except ValueError as exc:
+                    return {'error': f'Mensagem inválida: {exc}'}, 400
+                text = str(item['texto'])[:4000]
+                ident = str(item.get('wamid') or '') or 'sha256:' + hashlib.sha256(f'{number}|{ts}|{text}'.encode()).hexdigest()
+                db.execute('''INSERT INTO robot_messages(id,phone,body,ts,handoff,received_at) VALUES(?,?,?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET body=excluded.body, handoff=excluded.handoff''',
+                    (ident, number, text, ts, 1 if item.get('transferido_para_humano') else 0, int(time.time())))
+                saved += 1
+        return {'ok': True, 'salvas': saved}, 200
+
     @panel.post('/reprocessar')
     def reprocess_route():
         if request.form.get('acao') != 'aplicar':
@@ -1474,7 +1537,7 @@ def create_apps(db_path=None, settings=None):
     def backup():
         if database_url:
             tables = ('contacts','events','audit','campaign_windows','outbounds','preferences',
-                      'pinned_outbounds','raw_webhooks')
+                      'pinned_outbounds','raw_webhooks','robot_messages')
             snapshot = {'generated_at': int(time.time()), 'tables': {}}
             with connect() as source:
                 for table in tables:

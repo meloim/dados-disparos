@@ -185,6 +185,7 @@ tbody tr:hover{background:var(--surface-2)}
 .msg.out.campaign{background:var(--warn-bg)}
 .msg-who{font-size:11px;font-weight:700;color:var(--muted);margin-bottom:2px}
 .msg-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.msg-flag{align-self:flex-start;margin-top:4px}
 .msg-meta{align-self:flex-end;font-size:11px;color:var(--muted);margin-top:2px}
 @media (max-width:640px){.msg{max-width:88%}.conv-row{padding:10px 6px}}
 .server-title{font-size:14px;margin:16px 0 6px}
